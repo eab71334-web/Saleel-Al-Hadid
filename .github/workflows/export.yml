@@ -1,1 +1,239 @@
-ا
+name: "Export and Build iOS App"
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+env:
+  GODOT_VERSION: "4.5"
+  FORCE_COMPAT_RENDERER: "true"
+
+jobs:
+  export-and-build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Godot Engine
+        uses: chickensoft-games/setup-godot@v2
+        with:
+          version: 4.5.0
+          use-dotnet: false
+          include-templates: true
+
+      - name: Prepare iOS export template
+        run: |
+          godot --version
+          TEMPLATE_DIR="$HOME/Library/Application Support/Godot/export_templates/${GODOT_VERSION}.stable"
+          mkdir -p "$TEMPLATE_DIR"
+
+          FOUND=$(find "$HOME" -name "ios.zip" -not -path "*/node_modules/*" 2>/dev/null | head -n 1 || true)
+          echo "Found: $FOUND"
+
+          if [ -z "$FOUND" ]; then
+            curl -fL -o /tmp/templates.tpz \
+              "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
+            unzip -q /tmp/templates.tpz -d /tmp/godot_templates
+            cp -r /tmp/godot_templates/templates/* "$TEMPLATE_DIR/"
+          elif [ ! -f "$TEMPLATE_DIR/ios.zip" ]; then
+            cp "$FOUND" "$TEMPLATE_DIR/ios.zip"
+          fi
+
+          test -f "$TEMPLATE_DIR/ios.zip"
+          echo "IOS_ZIP=$TEMPLATE_DIR/ios.zip" >> "$GITHUB_ENV"
+
+      - name: Fix project settings
+        run: |
+          python3 - <<'PY'
+          import os, re
+          p = "project.godot"
+          s = open(p, encoding="utf-8").read()
+
+          def set_key(s, section, key, value):
+              line = f"{key}={value}"
+              if re.search(rf"^{re.escape(key)}=.*$", s, flags=re.M):
+                  return re.sub(rf"^{re.escape(key)}=.*$", line, s, flags=re.M)
+              if f"[{section}]" in s:
+                  return s.replace(f"[{section}]\n", f"[{section}]\n\n{line}\n", 1)
+              return s + f"\n[{section}]\n\n{line}\n"
+
+          s = set_key(s, "rendering", "textures/vram_compression/import_etc2_astc", "true")
+          if os.environ.get("FORCE_COMPAT_RENDERER") == "true":
+              s = set_key(s, "rendering", "renderer/rendering_method.mobile", '"gl_compatibility"')
+              s = set_key(s, "rendering", "renderer/rendering_method", '"gl_compatibility"')
+
+          open(p, "w", encoding="utf-8").write(s)
+          PY
+          grep -n -E "config/name|etc2_astc|rendering_method|run/main_scene" project.godot || true
+
+      - name: Create app icon PNG
+        run: |
+          mkdir -p build
+          # حوّل icon.svg إلى PNG 1024x1024 (qlmanage موجود في macOS)
+          if [ -f icon.svg ]; then
+            qlmanage -t -s 1024 -o /tmp icon.svg >/dev/null 2>&1 || true
+            if [ -f /tmp/icon.svg.png ]; then
+              cp /tmp/icon.svg.png app_icon.png
+            fi
+          fi
+          # لو فشل التحويل، اصنع أيقونة زرقاء بسيطة بـ Python
+          if [ ! -s app_icon.png ]; then
+            echo "Fallback: generating icon with Python"
+            python3 - <<'PY'
+          import zlib, struct
+          W = H = 1024
+          row = b"\x00" + bytes([13, 25, 64, 255]) * W
+          raw = row * H
+          def chunk(t, d):
+              c = struct.pack(">I", len(d)) + t + d
+              return c + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
+          png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", W, H, 8, 6, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b"")
+          open("app_icon.png", "wb").write(png)
+          PY
+          fi
+          # أيقونة التطبيق لازم تكون بدون شفافية
+          sips -s format png -s formatOptions default app_icon.png --out app_icon.png >/dev/null 2>&1 || true
+          ls -la app_icon.png
+          sips -g pixelWidth -g pixelHeight -g hasAlpha app_icon.png || true
+
+      - name: Check main scene exists
+        run: |
+          mkdir -p build
+          {
+            echo "=== MAIN SCENE CHECK ==="
+            MAIN=$(grep -E '^run/main_scene=' project.godot | sed -E 's/.*="(.*)"/\1/' || true)
+            echo "main_scene: ${MAIN:-NONE}"
+            if [ -z "$MAIN" ]; then
+              echo "PROBLEM: no main scene set"
+            else
+              FILE="${MAIN#res://}"
+              if [ -f "$FILE" ]; then echo "OK: scene exists"; else echo "PROBLEM: scene NOT found: $FILE"; fi
+            fi
+            echo "=== Project files ==="
+            find . -type f \( -name "*.tscn" -o -name "*.scn" -o -name "*.gd" \) -not -path "./build/*" -not -path "./.git/*" -not -path "./.godot/*" | head -50
+          } 2>&1 | tee build/diagnostics.txt | fold -w 55
+
+      - name: Fix export preset
+        run: |
+          sed -i '' "s|custom_template/debug=\".*\"|custom_template/debug=\"$IOS_ZIP\"|" export_presets.cfg
+          sed -i '' "s|custom_template/release=\".*\"|custom_template/release=\"$IOS_ZIP\"|" export_presets.cfg
+          sed -i '' 's|application/bundle_identifier=".*"|application/bundle_identifier="com.eab71334.towerwars"|' export_presets.cfg
+          sed -i '' 's|application/export_project_only=.*|application/export_project_only=true|' export_presets.cfg
+          sed -i '' 's|^export_path=".*"|export_path="build/ios/game.xcodeproj"|' export_presets.cfg
+          # اكتب مسار الأيقونة في كل حقول الأيقونات (بدون _dark و _tinted)
+          sed -i '' -E 's|^(icons/[a-z_]+[0-9]+x[0-9]+)=""|\1="res://app_icon.png"|' export_presets.cfg
+          grep -E "custom_template|bundle_identifier|export_path|export_project_only|targeted_device" export_presets.cfg
+          echo "--- icons ---"
+          grep -E "^icons/" export_presets.cfg | grep -v '=""' | head -20
+
+      - name: Import Godot Assets
+        run: godot --headless --verbose --editor --quit || true
+
+      - name: Export Xcode Project from Godot
+        run: |
+          rm -rf build/ios
+          mkdir -p build/ios
+          set +e
+          godot --headless --verbose --export-debug "iOS" build/ios/game.xcodeproj > export.log 2>&1
+          CODE=$?
+          set -e
+
+          echo "=========== ERRORS (wrapped) ==========="
+          grep -n -i -E "error|invalid|missing|not found" export.log | fold -w 55 || true
+          echo "========================================"
+
+          if ! find build/ios -maxdepth 2 -name "*.xcodeproj" | grep -q .; then
+            echo "Export failed (exit code $CODE)"
+            exit 1
+          fi
+          ls -la build/ios
+          ls build/ios/*.pck
+
+      - name: Repair empty JSON files
+        run: |
+          cd build/ios
+          echo "=== Contents.json files ==="
+          find . -name "*.json" -not -path "./out/*" | while read f; do
+            SIZE=$(wc -c < "$f" | tr -d ' ')
+            if ! python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$f" 2>/dev/null; then
+              echo "BAD ($SIZE bytes): $f"
+              printf '{\n  "info" : {\n    "author" : "xcode",\n    "version" : 1\n  }\n}\n' > "$f"
+              echo "  -> repaired"
+            else
+              echo "OK  ($SIZE bytes): $f"
+            fi
+          done 2>&1 | fold -w 55
+
+      - name: Inspect Xcode project
+        run: |
+          cd build/ios
+          {
+            echo "=== xcodeproj found ==="
+            find . -maxdepth 2 -name "*.xcodeproj"
+            PROJ=$(find . -maxdepth 2 -name "*.xcodeproj" | head -n 1)
+            echo "=== pbxproj lint ==="
+            plutil -lint "$PROJ/project.pbxproj" || true
+            echo "=== xcassets ==="
+            find . -name "*.xcassets" -not -path "./out/*" -exec sh -c 'echo "$1"; ls -la "$1"' _ {} \;
+            echo "=== PCK ==="
+            ls -la *.pck
+          } 2>&1 | tee -a ../diagnostics.txt | fold -w 55
+
+      - name: Build Unsigned IPA with Xcode
+        run: |
+          cd build/ios
+          PROJ=$(find . -maxdepth 2 -name "*.xcodeproj" -not -path "./out/*" | head -n 1)
+          NAME=$(basename "$PROJ" .xcodeproj)
+          echo "Project: $PROJ"
+          echo "Name: $NAME"
+          test -f "$PROJ/project.pbxproj"
+
+          set +e
+          xcodebuild -project "$PROJ" \
+            -scheme "$NAME" \
+            -sdk iphoneos \
+            -configuration Debug \
+            -derivedDataPath out \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build > ../xcodebuild.log 2>&1
+          CODE=$?
+          set -e
+
+          echo "=========== XCODE ERRORS (wrapped) ==========="
+          grep -n -i -E "error:|damaged|reason" ../xcodebuild.log | fold -w 55 | head -30 || true
+          echo "=============================================="
+          [ $CODE -eq 0 ] || exit $CODE
+
+          APP=$(find out/Build/Products/Debug-iphoneos -maxdepth 1 -name "*.app" | head -n 1)
+          echo "App: $APP"
+          mkdir -p Payload
+          cp -r "$APP" Payload/
+          zip -qr game.ipa Payload
+
+      - name: Verify IPA contents
+        run: |
+          cd build/ios
+          unzip -l game.ipa | grep -i -E "\.pck" | fold -w 55 || true
+          unzip -l game.ipa | grep -qi "\.pck" || (echo "NO PCK IN IPA" && exit 1)
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics
+          path: |
+            build/diagnostics.txt
+            build/xcodebuild.log
+            export.log
+          if-no-files-found: ignore
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: iOS-Unsigned-Build
+          path: build/ios/game.ipa
