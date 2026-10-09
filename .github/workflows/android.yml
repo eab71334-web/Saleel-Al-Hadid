@@ -1,0 +1,77 @@
+name: Export and Build Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+
+permissions:
+  contents: write
+
+env:
+  # Use the SAME Godot version as your iOS workflow (look at export.yml).
+  GODOT_VERSION: "4.4.1"
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Godot and export templates
+        run: |
+          set -e
+          cd "$RUNNER_TEMP"
+          BASE="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable"
+          curl -fsSL -o godot.zip "$BASE/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
+          curl -fsSL -o tpl.tpz "$BASE/Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
+          unzip -q godot.zip
+          sudo mv "Godot_v${GODOT_VERSION}-stable_linux.x86_64" /usr/local/bin/godot
+          unzip -q tpl.tpz
+          mkdir -p "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
+          mv templates/* "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable/"
+          godot --version
+
+      - name: Install Android SDK parts
+        run: |
+          set -e
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "SDK=$SDK" >> "$GITHUB_ENV"
+          yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$SDK/cmdline-tools/latest/bin/sdkmanager" "platform-tools" "build-tools;35.0.1" "platforms;android-35" "cmake;3.10.2.4988404"
+
+      - name: Debug keystore and Godot editor settings
+        run: bash tools/android_editor_settings.sh "$SDK" "$JAVA_HOME"
+
+      - name: Add Android preset
+        run: bash tools/add_android_preset.sh export_presets.cfg
+
+      - name: Import project
+        run: |
+          godot --headless --path . --import || true
+          godot --headless --path . --import || true
+
+      - name: Export APK
+        run: |
+          mkdir -p build
+          godot --headless --path . --export-debug "Android" build/MedievalWars.apk
+          ls -la build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MedievalWars-android-apk
+          path: build/MedievalWars.apk
+
+      - name: Publish release (download the APK straight on your phone)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: android-${{ github.run_number }}
+          name: Android build ${{ github.run_number }}
+          files: build/MedievalWars.apk
