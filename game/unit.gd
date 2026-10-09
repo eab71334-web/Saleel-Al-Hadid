@@ -1,4 +1,6 @@
 extends Node3D
+# A soldier: "sword", "archer", "cav" or "hero" (the player's commander).
+# Model faces +Z. Simulated only on the host; clients run it as a puppet.
 
 const M_FOLLOW := 0
 const M_ADVANCE := 1
@@ -13,8 +15,14 @@ const KINDS := {
 	"hero": {"hp": 450.0, "speed": 5.2, "dmg": 36.0, "range": 2.6, "cd": 0.6},
 }
 
+const Models := preload("res://game/models.gd")
+
 static var _cache := {}
 
+var rig = null      # custom model rig (see models.gd), null = procedural body
+var hrig = null     # custom horse rig
+var ride_y := 0.85
+var _sw_prev := 0.0
 var battle
 var uid := 0
 var kind := "sword"
@@ -54,6 +62,7 @@ var bar_mat: StandardMaterial3D
 var _dt := 0.016
 
 
+# ---------------------------------------------------------------- cached assets
 static func _cm(key: String, mk: Callable):
 	if not _cache.has(key):
 		_cache[key] = mk.call()
@@ -123,6 +132,7 @@ func _add(parent: Node3D, mesh: Mesh, mat: Material, p := Vector3.ZERO, r := Vec
 	return m
 
 
+# ---------------------------------------------------------------- setup
 func setup(k: String, t: int, o: int, b) -> void:
 	kind = k
 	team = t
@@ -154,6 +164,19 @@ func _build() -> void:
 	body = Node3D.new()
 	body.scale = Vector3.ONE * sc
 	add_child(body)
+
+	# optional custom model (game/models/<kind>.glb)
+	var custom = Models.build(kind)
+	if custom != null:
+		rig = custom
+		sc = 1.0
+		body.scale = Vector3.ONE
+		body.add_child(rig.root)
+		_team_ring(tc)
+		arm = Node3D.new()
+		body.add_child(arm)
+		_make_bar(hero)
+		return
 
 	_add(body, _cap(0.27, 1.0), green if kind == "archer" else cloth, Vector3(0, 1.05, 0), Vector3.ZERO, true)
 	if kind != "archer":
@@ -203,6 +226,23 @@ func _build() -> void:
 		_add(sh, _cyl(0.30, 0.07), cloth, Vector3(0, 0.01, 0))
 		_add(sh, _sph(0.07), gold, Vector3(0, 0.05, 0))
 
+	_make_bar(hero)
+
+
+func _team_ring(tc: Color) -> void:
+	var m := MeshInstance3D.new()
+	var t := TorusMesh.new()
+	t.inner_radius = 0.5
+	t.outer_radius = 0.62
+	t.rings = 20
+	m.mesh = t
+	m.material_override = _mat(tc, 0.0, 0.5, 1.5)
+	m.position.y = 0.04
+	m.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(m)
+
+
+func _make_bar(hero: bool) -> void:
 	bar = MeshInstance3D.new()
 	var q := QuadMesh.new()
 	q.size = Vector2(1.0, 0.11)
@@ -221,6 +261,14 @@ func _build() -> void:
 
 
 func _build_horse() -> void:
+	var hr = Models.build("horse")
+	if hr != null:
+		hrig = hr
+		horse = Node3D.new()
+		add_child(horse)
+		horse.add_child(hr.root)
+		ride_y = Models.HORSE_RIDE_Y
+		return
 	horse = Node3D.new()
 	add_child(horse)
 	var white := kind == "hero"
@@ -267,6 +315,7 @@ func set_mounted(m: bool) -> void:
 		bar.position.y = (2.6 if kind != "hero" else 3.7) + (0.9 if m else 0.0)
 
 
+# ---------------------------------------------------------------- animation (all peers)
 func _process(dt: float) -> void:
 	if puppet and not dead:
 		var np := position.lerp(tpos, clampf(dt * 12.0, 0.0, 1.0))
@@ -279,11 +328,13 @@ func _process(dt: float) -> void:
 	var mv := sim_speed > 0.4
 	anim_t += dt * (1.0 + sim_speed * 0.5)
 	var ph := sin(anim_t * 7.0)
+	if rig != null or hrig != null:
+		_model_anim()
 	for i in legs.size():
 		legs[i].rotation.x = ph * 0.8 * (1.0 if i == 0 else -1.0) * (1.0 if mv else 0.0)
 	for i in hlegs.size():
 		hlegs[i].rotation.x = ph * 0.7 * (1.0 if i % 3 == 0 else -1.0) * (1.0 if mv else 0.0)
-	body.position.y = (0.85 if mounted else 0.0) + (absf(ph) * 0.05 if mv else 0.0)
+	body.position.y = (ride_y if mounted else 0.0) + (absf(ph) * 0.05 if (mv and rig == null) else 0.0)
 	body.scale = Vector3.ONE * sc * (1.0 + flash * 0.1)
 	if swing > 0.0:
 		swing = maxf(0.0, swing - dt * (1.5 if power else 2.4))
@@ -299,6 +350,40 @@ func _process(dt: float) -> void:
 		bar_mat.albedo_color = Color(1.0 - r, r, 0.15)
 
 
+func _model_anim() -> void:
+	if rig != null:
+		if swing > 0.9 and _sw_prev <= 0.9 and Models.has_anim(rig, "attack"):
+			Models.play(rig, "attack", true)
+		if not Models.busy(rig):
+			var want := "idle"
+			if mounted:
+				want = "ride"
+			elif sim_speed > 5.0:
+				want = "run"
+			elif sim_speed > 0.4:
+				want = "walk"
+			var used: String = Models.play(rig, want)
+			if used == "walk":
+				rig.player.speed_scale = clampf(sim_speed / 4.2, 0.6, 1.8)
+			elif used == "run":
+				rig.player.speed_scale = clampf(sim_speed / 7.0, 0.6, 1.8)
+			elif rig.player != null:
+				rig.player.speed_scale = 1.0
+	_sw_prev = swing
+	if hrig != null and horse != null and horse.visible:
+		var hw := "idle"
+		if sim_speed > 5.0:
+			hw = "run"
+		elif sim_speed > 0.4:
+			hw = "walk"
+		var hu: String = Models.play(hrig, hw)
+		if hu == "walk" and hrig.player != null:
+			hrig.player.speed_scale = clampf(sim_speed / 3.0, 0.6, 1.8)
+		elif hu == "run" and hrig.player != null:
+			hrig.player.speed_scale = clampf(sim_speed / 8.0, 0.6, 1.8)
+
+
+# ---------------------------------------------------------------- simulation (host only)
 func spd() -> float:
 	var s := base_speed
 	if kind == "hero" and mounted:
@@ -494,10 +579,15 @@ func die() -> void:
 	swing = 0.0
 	if bar:
 		bar.visible = false
-	var tw := create_tween()
-	tw.tween_property(body, "rotation:x", -1.5, 0.45)
-	tw.parallel().tween_property(body, "position:y", 0.25, 0.45)
+	var has_die: bool = rig != null and Models.has_anim(rig, "die")
+	if has_die:
+		Models.play(rig, "die", true)
+	else:
+		var tw := create_tween()
+		tw.tween_property(body, "rotation:x", -1.5, 0.45)
+		tw.parallel().tween_property(body, "position:y", 0.25, 0.45)
 	if horse and horse.visible:
-		tw.parallel().tween_property(horse, "rotation:z", 1.4, 0.5)
-		tw.parallel().tween_property(horse, "position:y", 0.45, 0.5)
+		var th := create_tween()
+		th.tween_property(horse, "rotation:z", 1.4, 0.5)
+		th.parallel().tween_property(horse, "position:y", 0.45, 0.5)
 	get_tree().create_timer(7.0).timeout.connect(func(): battle.remove_unit(self))
