@@ -354,7 +354,8 @@ var map_open := false
 var wheel_open := false
 var phone_open := false
 var phone_t := 0.0
-var phone_scale := 0.55
+var phone_scale := 0.8
+var police_called := 0.0
 var phone_raise_t := 0.0
 var bld_rects: Array[Rect2] = []
 var block_rects: Array[Rect2] = []
@@ -3063,6 +3064,27 @@ func _draw_phone() -> void:
 	pc.draw_style_box(sb_screen, Rect2(20, 20, 400, 860))
 	if apps != null:
 		apps.draw_bg(pc)
+	pc.draw_style_box(sb_notch, Rect2(165, 30, 110, 26))
+	var t := Time.get_time_dict_from_system()
+	pc.draw_string(ThemeDB.fallback_font, Vector2(52, 90), "%02d:%02d" % [t["hour"], t["minute"]], HORIZONTAL_ALIGNMENT_LEFT, -1, 30, Color.WHITE)
+	pc.draw_string(ThemeDB.fallback_font, Vector2(290, 90), "5G", HORIZONTAL_ALIGNMENT_LEFT, -1, 26, Color(1, 1, 1, 0.8))
+	pc.draw_rect(Rect2(342, 70, 40, 20), Color(1, 1, 1, 0.9), false, 2.0)
+	pc.draw_rect(Rect2(345, 73, 28, 14), Color(0.4, 0.9, 0.5))
+	if apps != null:
+		if apps.app_open():
+			apps.draw(pc)
+		else:
+			apps.draw_home(pc)
+	var hc := Vector2(220, 845)
+	pc.draw_circle(hc, 30.0, Color(1, 1, 1, 0.2))
+	pc.draw_arc(hc, 30.0, 0.0, TAU, 28, Color(1, 1, 1, 0.85), 3.0, true)
+	pc.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+
+	pc.draw_set_transform(r.position, 0.0, Vector2(phone_scale, phone_scale))
+	pc.draw_style_box(sb_body, Rect2(0, 0, 440, 900))
+	pc.draw_style_box(sb_screen, Rect2(20, 20, 400, 860))
+	if apps != null:
+		apps.draw_bg(pc)
 	else:
 		pc.draw_circle(Vector2(320, 270), 120.0, Color(0.35, 0.25, 0.8, 0.16))
 		pc.draw_circle(Vector2(130, 650), 140.0, Color(0.1, 0.55, 0.9, 0.12))
@@ -3452,13 +3474,14 @@ func _input(event: InputEvent) -> void:
 				_set_wheel(false)
 				return
 			if phone_t > 0.35 and _prect().has_point(p):
-				_phone_touch(p)
-				return
-			if dead:
-				return
-			if _mini_rect().has_point(p):
-				_set_map(true)
-				return
+				func _phone_touch(p: Vector2) -> void:
+	var r := _prect()
+	var lp := (p - r.position) / phone_scale
+	if apps != null:
+		apps.touch(lp)
+		return
+	if lp.distance_to(Vector2(220, 845)) < 40.0:
+		_set_phone(false)
 			if p.distance_to(_phone_btn_center()) < 70.0:
 				_set_phone(not phone_open)
 				return
@@ -3520,6 +3543,7 @@ func _physics_process(delta: float) -> void:
 	raise_t = maxf(raise_t - delta, 0.0)
 	phone_raise_t = maxf(phone_raise_t - delta, 0.0)
 	recoil = move_toward(recoil, 0.0, 0.6 * delta)
+	police_called = maxf(police_called - delta, 0.0)
 
 	var armed_now := aim_t > 0.0 and cur_weapon > 0 and not in_car and not phone_open
 	if armed_now and not prev_armed:
@@ -3553,7 +3577,8 @@ func _physics_process(delta: float) -> void:
 
 	_try_fire(delta)
 	_update_peds(delta)
-	_update_cops(delta)
+	var hostile := stars > 0 and not dead
+	var chasing := (stars > 0 or police_called > 0.0) and not dead
 	_update_officers(delta)
 	_update_wanted(delta)
 	_update_camera(delta)
