@@ -11,3 +11,4 @@ Models are scaled automatically (heights are set in game/models.gd -> HEIGHTS).
 Models should face +Z (the default for glTF/Mixamo).
 Animations inside the file are used automatically if their names contain
 idle / walk / run / attack / die / ride.
+villager.glb  villager (optional, used in Kingdom mode)
