@@ -6,6 +6,7 @@ signal hosts_changed
 signal start_requested(cfg)
 signal join_failed
 signal joined
+signal rejected(reason)
 
 const PORT := 24680
 const DISC := 24681
@@ -20,6 +21,9 @@ var _listen: PacketPeerUDP
 var _t := 0.0
 var _join_t := -1.0
 var last_error := ""
+var max_players := 4
+var started := false
+var room_name := ""
 
 
 func _ready() -> void:
@@ -47,6 +51,7 @@ func host_game() -> bool:
 	is_host = true
 	online = true
 	players = {1: {"name": my_name, "idx": 0}}
+	started = false
 	_bcast = PacketPeerUDP.new()
 	_bcast.set_broadcast_enabled(true)
 	players_changed.emit()
@@ -92,6 +97,7 @@ func leave() -> void:
 	online = false
 	is_host = false
 	players.clear()
+	started = false
 
 
 func local_ips() -> Array:
@@ -130,14 +136,22 @@ func _process(dt: float) -> void:
 		_t = 0.0
 		for target in _bcast_targets():
 			_bcast.set_dest_address(target, DISC)
-			_bcast.put_packet(("MW|" + my_name).to_utf8_buffer())
+			_bcast.put_packet(("MW|%s|%d|%d|%d" % [my_name, players.size(), max_players, 1 if started else 0]).to_utf8_buffer())
 	if _listen:
 		var changed := false
 		while _listen.get_available_packet_count() > 0:
 			var s: String = _listen.get_packet().get_string_from_utf8()
 			var ip: String = _listen.get_packet_ip()
 			if s.begins_with("MW|"):
-				hosts[ip] = {"name": s.substr(3), "t": Time.get_ticks_msec()}
+				var parts: PackedStringArray = s.split("|")
+				var cnt := 1
+				var mx := 4
+				var st := false
+				if parts.size() >= 5:
+					cnt = int(parts[2])
+					mx = int(parts[3])
+					st = parts[4] == "1"
+				hosts[ip] = {"name": parts[1] if parts.size() > 1 else "?", "count": cnt, "max": mx, "started": st, "t": Time.get_ticks_msec()}
 				changed = true
 		if changed:
 			hosts_changed.emit()
@@ -156,7 +170,7 @@ func _on_peer_connected(_id: int) -> void:
 func _on_peer_disconnected(id: int) -> void:
 	if multiplayer.is_server() and players.has(id):
 		players.erase(id)
-		sync_players.rpc(players)
+		sync_players.rpc(players, max_players)
 		players_changed.emit()
 
 
@@ -165,18 +179,41 @@ func register(nm: String) -> void:
 	if not multiplayer.is_server():
 		return
 	var id := multiplayer.get_remote_sender_id()
-	players[id] = {"name": nm, "idx": players.size()}
-	sync_players.rpc(players)
+	if started or players.size() >= max_players:
+		var why := "started" if started else "full"
+		rejected_msg.rpc_id(id, why)
+		var tmr := get_tree().create_timer(0.4)
+		tmr.timeout.connect(func():
+			if multiplayer.multiplayer_peer != null and multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
+				multiplayer.multiplayer_peer.disconnect_peer(id))
+		return
+	# lowest free slot index
+	var used := []
+	for k in players.keys():
+		used.append(int(players[k].idx))
+	var idx := 0
+	while used.has(idx):
+		idx += 1
+	players[id] = {"name": nm, "idx": idx}
+	sync_players.rpc(players, max_players)
 	players_changed.emit()
 
 
 @rpc("authority", "reliable")
-func sync_players(p: Dictionary) -> void:
+func rejected_msg(reason: String) -> void:
+	leave()
+	rejected.emit(reason)
+
+
+@rpc("authority", "reliable")
+func sync_players(p: Dictionary, mx := 4) -> void:
 	players = p
+	max_players = mx
 	players_changed.emit()
 
 
 @rpc("authority", "call_local", "reliable")
 func start_game(cfg: Dictionary) -> void:
+	started = true
 	_bcast = null
 	start_requested.emit(cfg)
