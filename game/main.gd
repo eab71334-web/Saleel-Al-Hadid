@@ -5,6 +5,7 @@ const BattleS := preload("res://game/battle.gd")
 const UpdaterS := preload("res://game/updater.gd")
 const Build := preload("res://game/build.gd")
 const LocS := preload("res://game/loc.gd")
+const CardsS := preload("res://game/menucards.gd")
 const SettingsS := preload("res://game/settings.gd")
 
 var net
@@ -20,6 +21,8 @@ var _mode := ""
 var updater
 var _upd_label: Label
 var _upd_btn: Button
+var _start_btn: Button
+var _room_lbl: Label
 var _loc_t := 0.0
 var _fps_lbl: Label
 
@@ -51,6 +54,9 @@ func _ready() -> void:
 	net.start_requested.connect(_on_start)
 	net.join_failed.connect(func(): _set_status("Could not connect. Check: same Wi-Fi, host already started, and allow Local Network for this app (iPhone Settings > this app)."))
 	net.joined.connect(func(): _show_lobby(false))
+	net.rejected.connect(func(why):
+		_show_join()
+		_set_status("Room is full." if why == "full" else "The game already started."))
 	_fps_lbl = Label.new()
 	_fps_lbl.position = Vector2(12, 4)
 	_fps_lbl.add_theme_font_size_override("font_size", 22)
@@ -134,23 +140,8 @@ func _show_menu() -> void:
 	_label(vb, "MEDIEVAL WARS", 72, Color(1, 0.82, 0.35))
 	_label(vb, "Swords  -  Bows  -  Kingdoms", 30, Color(0.8, 0.8, 0.85))
 	_label(vb, " ", 20)
-	_button(vb, "Solo Battle (vs AI)", func():
-		net.start_solo()
-		cfg.mode = "battle"
-		_mode = "solo"
-		_show_lobby(true))
-	_button(vb, "Solo Kingdom (vs AI king)", func():
-		net.start_solo()
-		cfg.mode = "kingdom"
-		_mode = "solo"
-		_show_lobby(true))
-	_button(vb, "Host LAN Game", func():
-		if net.host_game():
-			_mode = "host"
-			_show_lobby(true)
-		else:
-			_set_status("Could not host (port busy?)"))
-	_button(vb, "Join LAN Game", func(): _show_join())
+	_button(vb, "PLAY", func(): _show_play())
+	_button(vb, "LOCAL (Wi-Fi)", func(): _show_local())
 	_button(vb, "Settings", func(): _show_settings())
 	_status = _label(vb, "", 26, Color(1, 0.5, 0.4))
 	_wrap(_status)
@@ -160,6 +151,40 @@ func _show_menu() -> void:
 	_upd_btn.visible = false
 	_label(vb, "build %d" % int(Build.BUILD), 18, Color(0.5, 0.5, 0.55))
 	_refresh_update()
+
+
+func _show_play() -> void:
+	var vb := _clear()
+	_label(vb, "Choose your game", 52, Color(1, 0.82, 0.35))
+	var cards := CardsS.new()
+	cards.custom_minimum_size = Vector2(1000, 430)
+	cards.cards = [
+		{"id": "battle", "title": "Solo Battle", "desc": "Command your army against the enemy", "art": "battle"},
+		{"id": "kingdom", "title": "Solo Kingdom", "desc": "Build a castle city, then rule or conquer", "art": "kingdom"},
+	]
+	cards.chosen.connect(func(id):
+		net.start_solo()
+		cfg.mode = String(id)
+		_mode = "solo"
+		_show_lobby(true))
+	vb.add_child(cards)
+	_button(vb, "Back", func(): _show_menu())
+
+
+func _show_local() -> void:
+	var vb := _clear()
+	_label(vb, "LOCAL (Wi-Fi)", 56, Color(1, 0.82, 0.35))
+	_label(vb, "Play with friends on the same Wi-Fi", 26, Color(0.8, 0.8, 0.85))
+	_button(vb, "Create Room", func():
+		if net.host_game():
+			_mode = "host"
+			_show_lobby(true)
+		else:
+			_set_status("Could not host (port busy?)"))
+	_button(vb, "Join Room", func(): _show_join())
+	_button(vb, "Back", func(): _show_menu())
+	_status = _label(vb, "", 26, Color(1, 0.5, 0.4))
+	_wrap(_status)
 
 
 func _refresh_update() -> void:
@@ -188,7 +213,7 @@ func _show_join() -> void:
 			_set_status("Connecting...")
 		else:
 			_set_status("Invalid address"))
-	_button(vb, "Back", func(): _show_menu())
+	_button(vb, "Back", func(): _show_local())
 	_status = _label(vb, "", 26, Color(1, 0.8, 0.4))
 	_wrap(_status)
 	net.start_listening()
@@ -229,9 +254,18 @@ func _refresh_hosts() -> void:
 		_label(_hosts_box, "(searching...)", 26, Color(0.6, 0.6, 0.65))
 	for ip in net.hosts.keys():
 		var addr: String = ip
-		_button(_hosts_box, "%s  (%s)" % [net.hosts[ip].name, ip], func():
+		var h: Dictionary = net.hosts[ip]
+		var full: bool = int(h.count) >= int(h.max)
+		var started: bool = bool(h.started)
+		var label := "%s   %d/%d" % [h.name, int(h.count), int(h.max)]
+		if started:
+			label += "   (started)"
+		elif full:
+			label += "   (full)"
+		var jb := _button(_hosts_box, label, func():
 			if net.join_game(addr):
 				_set_status("Connecting..."))
+		jb.disabled = full or started
 
 
 func _show_lobby(is_host: bool) -> void:
@@ -242,6 +276,20 @@ func _show_lobby(is_host: bool) -> void:
 		_label(vb, "Your IP: %s" % (", ".join(ips) if not ips.is_empty() else "?"), 26, Color(0.7, 0.85, 1))
 	_lobby_box = VBoxContainer.new()
 	vb.add_child(_lobby_box)
+	if is_host and _mode == "host":
+		var capl := _label(vb, "Room size: %d players" % net.max_players, 28)
+		var caps := HSlider.new()
+		caps.min_value = 2
+		caps.max_value = 6
+		caps.step = 1
+		caps.value = net.max_players
+		caps.custom_minimum_size = Vector2(560, 50)
+		caps.value_changed.connect(func(v):
+			net.max_players = maxi(int(v), net.players.size())
+			caps.set_value_no_signal(net.max_players)
+			capl.text = LocS.t("Room size: %d players" % net.max_players) if LocS.lang == "ar" else "Room size: %d players" % net.max_players
+			_refresh_lobby())
+		vb.add_child(caps)
 	if is_host:
 		var kingdom: bool = String(cfg.get("mode", "battle")) == "kingdom"
 		if _mode == "host":
@@ -250,12 +298,12 @@ func _show_lobby(is_host: bool) -> void:
 				_show_lobby(true))
 		if kingdom:
 			_label(vb, "Build a city, hire villagers and soldiers,\nsend letters, declare war, duel the king.", 26, Color(0.85, 0.85, 0.9))
-			_button(vb, "START KINGDOM", func(): _start())
+			_start_btn = _button(vb, "START KINGDOM", func(): _start())
 		else:
 			_slider(vb, "Swordsmen", "sword", 0, 80)
 			_slider(vb, "Archers", "archer", 0, 50)
 			_slider(vb, "Cavalry", "cav", 0, 30)
-			_button(vb, "START BATTLE", func(): _start())
+			_start_btn = _button(vb, "START BATTLE", func(): _start())
 	else:
 		_label(vb, "Waiting for the host to start...", 32)
 	_button(vb, "Back", func():
@@ -289,9 +337,17 @@ func _refresh_lobby() -> void:
 		_label(_lobby_box, "%s   [%s]" % [p.name, team], 28, Color(0.5, 0.7, 1) if team == "BLUE" else Color(1, 0.5, 0.45))
 	if _mode == "solo":
 		_label(_lobby_box, "Enemy AI   [RED]", 28, Color(1, 0.5, 0.45))
+	if _mode == "host" or (_mode == "" and net.online):
+		_label(_lobby_box, "Players in room: %d/%d" % [net.players.size(), net.max_players], 26, Color(0.7, 0.9, 0.7))
+		if net.players.size() >= net.max_players:
+			_label(_lobby_box, "Room is full - nobody else can join.", 24, Color(1, 0.8, 0.4))
+	if _start_btn != null and is_instance_valid(_start_btn) and _mode == "host":
+		_start_btn.disabled = net.players.size() < 2
 
 
 func _start() -> void:
+	if net.online and net.players.size() < 2:
+		return
 	if net.online:
 		net.start_game.rpc(cfg)
 	else:
