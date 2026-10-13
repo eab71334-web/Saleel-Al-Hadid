@@ -12,7 +12,7 @@ var net
 var ui: Control
 var ui_layer: CanvasLayer
 var battle
-var cfg := {"sword": 40, "archer": 20, "cav": 10, "mode": "battle"}
+var cfg := {"sword": 40, "archer": 20, "cav": 10, "mode": "battle", "kingdoms": 2}
 var _lobby_box: VBoxContainer
 var _hosts_box: VBoxContainer
 var _ip_edit: LineEdit
@@ -78,6 +78,7 @@ func _process(dt: float) -> void:
 		if ui_layer.visible:
 			LocS.apply_tree(ui)
 		_fps_lbl.visible = SettingsS.show_fps
+		_fps_lbl.position = Vector2(get_viewport().get_visible_rect().size.x - 120.0, 6.0)
 		if SettingsS.show_fps:
 			_fps_lbl.text = "FPS %d" % Engine.get_frames_per_second()
 
@@ -298,6 +299,19 @@ func _show_lobby(is_host: bool) -> void:
 				_show_lobby(true))
 		if kingdom:
 			_label(vb, "Build a city, hire villagers and soldiers,\nsend letters, declare war, duel the king.", 26, Color(0.85, 0.85, 0.9))
+			var kl := _label(vb, "Kingdoms: %d" % int(cfg.kingdoms), 30)
+			var ks := HSlider.new()
+			ks.min_value = 2
+			ks.max_value = 6
+			ks.step = 1
+			ks.value = cfg.kingdoms
+			ks.custom_minimum_size = Vector2(560, 50)
+			ks.value_changed.connect(func(v):
+				cfg.kingdoms = maxi(int(v), maxi(2, net.players.size()))
+				ks.set_value_no_signal(cfg.kingdoms)
+				kl.text = LocS.t("Kingdoms: %d" % int(cfg.kingdoms)) if LocS.lang == "ar" else "Kingdoms: %d" % int(cfg.kingdoms)
+				_refresh_lobby())
+			vb.add_child(ks)
 			_start_btn = _button(vb, "START KINGDOM", func(): _start())
 		else:
 			_slider(vb, "Swordsmen", "sword", 0, 80)
@@ -331,12 +345,19 @@ func _refresh_lobby() -> void:
 		return
 	for c in _lobby_box.get_children():
 		c.queue_free()
+	var kmode: bool = String(cfg.get("mode", "battle")) == "kingdom"
+	var nkk: int = maxi(int(cfg.get("kingdoms", 2)), net.players.size()) if kmode else 2
+	var taken := {}
 	for id in net.players.keys():
 		var p: Dictionary = net.players[id]
-		var team := "BLUE" if int(p.idx) % 2 == 0 else "RED"
-		_label(_lobby_box, "%s   [%s]" % [p.name, team], 28, Color(0.5, 0.7, 1) if team == "BLUE" else Color(1, 0.5, 0.45))
+		var ti: int = int(p.idx) % nkk
+		taken[ti] = true
+		_label(_lobby_box, "%s   [%s]" % [p.name, LocS.t(BattleS.TEAM_NAMES[ti].to_upper())], 28, BattleS.TEAM_COLS[ti].lightened(0.3))
 	if _mode == "solo":
-		_label(_lobby_box, "Enemy AI   [RED]", 28, Color(1, 0.5, 0.45))
+		taken[0] = true
+	for ti2 in nkk:
+		if not taken.has(ti2) and (_mode == "solo" or _mode == "host" or net.online):
+			_label(_lobby_box, "%s   [%s]" % [LocS.t("AI kingdom") if kmode else LocS.t("Enemy AI"), LocS.t(BattleS.TEAM_NAMES[ti2].to_upper())], 26, BattleS.TEAM_COLS[ti2].lightened(0.3))
 	if _mode == "host" or (_mode == "" and net.online):
 		_label(_lobby_box, "Players in room: %d/%d" % [net.players.size(), net.max_players], 26, Color(0.7, 0.9, 0.7))
 		if net.players.size() >= net.max_players:
@@ -348,6 +369,7 @@ func _refresh_lobby() -> void:
 func _start() -> void:
 	if net.online and net.players.size() < 2:
 		return
+	cfg.kingdoms = clampi(maxi(int(cfg.get("kingdoms", 2)), net.players.size()), 2, 6)
 	if net.online:
 		net.start_game.rpc(cfg)
 	else:
