@@ -7,6 +7,23 @@ static var _pat: Array = []
 static var _built := false
 
 const AR := {
+	# multi-kingdom / map / admin
+	"Kingdoms: %d": "المملكات: %d", "AI kingdom": "مملكة الكمبيوتر", "Enemy AI": "عدو الكمبيوتر",
+	"GREEN": "الأخضر", "YELLOW": "الأصفر", "PURPLE": "البنفسجي", "ORANGE": "البرتقالي",
+	"Blue": "الأزرق", "Red": "الأحمر", "Green": "الأخضر", "Yellow": "الأصفر", "Purple": "البنفسجي", "Orange": "البرتقالي",
+	"Blue (you)": "الأزرق (أنت)", "Red (you)": "الأحمر (أنت)", "Green (you)": "الأخضر (أنت)", "Yellow (you)": "الأصفر (أنت)", "Purple (you)": "البنفسجي (أنت)", "Orange (you)": "البرتقالي (أنت)",
+	"King of Blue (AI)": "ملك الأزرق (كمبيوتر)", "King of Red (AI)": "ملك الأحمر (كمبيوتر)", "King of Green (AI)": "ملك الأخضر (كمبيوتر)",
+	"King of Yellow (AI)": "ملك الأصفر (كمبيوتر)", "King of Purple (AI)": "ملك البنفسجي (كمبيوتر)", "King of Orange (AI)": "ملك البرتقالي (كمبيوتر)",
+	"  X": "  سقطت", "  WAR": "  حرب", "  <": "  <",
+	"Target: ": "الهدف: ", "(tap to change)": "(اضغط للتغيير)", "(tap to switch)": "(اضغط للتبديل)",
+	"ARMY: %d   ENEMY: %d": "الجيش: %d   العدو: %d",
+	"AT THE GATE": "عند البوابة", "IN FRONT": "في الأمام", "MIDFIELD": "وسط الميدان", "ON THE WALLS": "على الأسوار",
+	"BATTLE MAP": "خريطة المعركة", "Pick groups, then tap the map where they should stand.": "اختر الفرق ثم اضغط على الخريطة وين يقفو.",
+	"AT MY WALL": "عند سوري", "REAR GUARD": "الحرس الخلفي", "FRONT LINE": "خط المواجهة", "RETREAT to my wall": "انسحاب للسور",
+	"Orders given: fall back.": "تم الأمر: انسحاب.",
+	"ADMIN": "المشرف", "ADMIN MODE": "وضع المشرف", "View: ": "المشاهدة: ", "Control this kingdom: ": "التحكم في هذه المملكة: ",
+	"See everything: ": "كشف الخريطة: ", "Game speed: x%d": "سرعة اللعبة: x%d", "+500 gold, +300 food": "+500 ذهب، +300 أكل",
+	"Your kingdom has fallen. You are now watching.": "سقطت مملكتك. أنت الحين تشاهد.",
 	# menu
 	"MEDIEVAL WARS": "حروب القرون الوسطى",
 	"Swords  -  Bows  -  Kingdoms": "سيوف - أقواس - ممالك",
