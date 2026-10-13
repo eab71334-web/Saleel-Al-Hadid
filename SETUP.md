@@ -66,3 +66,10 @@ After you install a NEW full build, the menu will re-check and replace older upd
 - زر ROYAL: لقبك وثروتك + مراسيم: جمع الضرائب (كل دقيقة)، وليمة ملكية (تعالج الجيش)، وتحدي الملك لمبارزة (وقت الحرب).
 - قريب من العرش يظهر زر "SIT ON THRONE".
 - مواجهة الملكين: مشهد سينمائي فيه اسم الملكين قبل المبارزة.
+
+## v6 — up to 6 kingdoms, battle map, admin code, new look
+- Lobby (Kingdom mode): "Kingdoms: N" slider, 2 to 6. Kingdoms without a human are run by AI kings. N = 2 plays like before.
+- Kingdoms sit on a ring. War is declared against ONE kingdom at a time (CITY panel > Target button, or tell the advisor "war on green"). Last kingdom standing wins; if your castle falls you keep watching.
+- War map: quick STATION presets (gate / in front / midfield / walls) plus tap-to-station. Battle mode now has a MAP button too.
+- Secret admin code: type the word in game/admin.gd (default: سوسوس or sososo) to the ADVISOR. An ADMIN button appears: switch viewpoint to any kingdom, take control of it (solo/vs AI only), see the whole map, game speed, +gold. Change the words in game/admin.gd.
+- New files: game/battlemap.gd, game/admin.gd. Changed: battle, kingdom, unit, fortress, mapview, court, advisor, main, loc.
