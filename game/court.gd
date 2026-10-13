@@ -4,6 +4,7 @@ extends Node
 
 const LocS := preload("res://game/loc.gd")
 const AdvisorS := preload("res://game/advisor.gd")
+const AdminS := preload("res://game/admin.gd")
 
 var kingdom
 var battle
@@ -28,8 +29,9 @@ var rbtn_tax: Button
 var rbtn_feast: Button
 var royal_open := false
 
-const NAMES_EN := ["Castle Eaglecrest", "Castle Blackthorn"]
-const NAMES_AR := ["قلعة النسر", "قلعة الشوك الأسود"]
+const NAMES_EN := ["Castle Eaglecrest", "Castle Blackthorn", "Castle Greenvale", "Castle Goldmere", "Castle Violetkeep", "Castle Emberfall"]
+const NAMES_AR := ["قلعة النسر", "قلعة الشوك الأسود", "قلعة الوادي الأخضر", "قلعة البحيرة الذهبية", "قلعة البنفسج", "قلعة الجمر"]
+var pending_to := -1
 
 
 static func castle_name(t: int, ar := false) -> String:
@@ -167,7 +169,7 @@ func _build_royal(u: float, vs: Vector2) -> void:
 	ch.text = "Challenge to Duel\nface the other king"
 	ch.custom_minimum_size = Vector2(618, 76) * u
 	ch.pressed.connect(func():
-		kingdom.cmd("challenge")
+		kingdom.cmd("challenge", {"to": kingdom.target_team()})
 		toggle_royal())
 	vb.add_child(ch)
 
@@ -189,7 +191,7 @@ func toggle_royal() -> void:
 
 
 func _refresh_royal() -> void:
-	var t: int = kingdom.my_team
+	var t: int = kingdom.vteam()
 	var rank: String = kingdom.rank_of(t)
 	var kn: String = kingdom.king_name(t)
 	var txt := "%s\n%s\n%s\n%s\n%s" % [LocS.t("KING %s" % kn), LocS.t("Rank: %s" % LocS.t(rank)), LocS.t("Treasury: %d gold" % int(kingdom.gold[t])), LocS.t("Food: %d" % int(kingdom.food[t])), LocS.t("Villagers: %d   Soldiers: %d" % [kingdom.vill_n[t], kingdom.soldier_n[t]])]
@@ -241,6 +243,17 @@ func _submit() -> void:
 	if txt.is_empty():
 		return
 	edit.text = ""
+	var code := AdvisorS.norm(txt).replace(" ", "")
+	for cd in AdminS.CODES:
+		if code == AdvisorS.norm(String(cd)).replace(" ", ""):
+			var on: bool = not battle.admin
+			kingdom.set_admin(on)
+			var ar_now := AdvisorS.is_arabic(txt) or lang_ar
+			_say(_L("Admin mode ON - open the ADMIN button.", "وضع المشرف شغّال - افتح زر ADMIN.") if on else _L("Admin mode OFF.", "وضع المشرف مطفي."))
+			if ar_now and not lang_ar:
+				pass
+			edit.grab_focus()
+			return
 	if AdvisorS.is_arabic(txt):
 		lang_ar = true
 		lang_btn.text = "AR"
@@ -262,7 +275,7 @@ func run(text: String) -> void:
 func _soldier_count() -> int:
 	var n := 0
 	for u in battle.units.values():
-		if u.team == kingdom.my_team and not u.dead and u.kind != "villager" and u.kind != "hero":
+		if u.team == kingdom.vteam() and not u.dead and u.kind != "villager" and u.kind != "hero":
 			n += 1
 	return n
 
@@ -276,7 +289,7 @@ func _repeat(act: String, n: int, data := {}) -> int:
 
 func _do(a: Dictionary) -> void:
 	var act: String = a.get("act", "unknown")
-	var t: int = kingdom.my_team
+	var t: int = kingdom.vteam()
 	if act != "yes" and act != "no" and act != "unknown":
 		if pending != "" :
 			pending = ""
@@ -303,8 +316,9 @@ func _do(a: Dictionary) -> void:
 			kingdom.cmd("feast")
 			_say(_L("Preparing the royal feast.", "نجهز الوليمة الملكية."))
 		"challenge":
-			kingdom.cmd("challenge")
-			_say(_L("The enemy king is challenged to a duel!", "تحدينا ملك العدو لمبارزة!"))
+			var ct: int = int(a.get("to", kingdom.target_team()))
+			kingdom.cmd("challenge", {"to": ct})
+			_say(_L("%s is challenged to a duel!" % castle_name(ct), "تحدينا ملك %s لمبارزة!" % castle_name(ct, true)))
 		"upgrade":
 			kingdom.cmd("upgrade")
 			_say(_L("Developing the castle.", "نطوّر القلعة."))
@@ -320,15 +334,17 @@ func _do(a: Dictionary) -> void:
 			var nm: Array = {"sword": ["swordsmen", "سيافة"], "archer": ["archers", "رماة"], "cav": ["cavalry", "فرسان"]}[kd]
 			_say(_L("Training %d %s." % [k5, nm[0]], "ندرّب %d من %s." % [k5, nm[1]]))
 		"war":
-			if battle.war:
+			var wt: int = int(a.get("to", kingdom.target_team()))
+			if kingdom.at_war(t, wt):
 				_say(_L("We are already at war, my king!", "نحن في حرب أصلاً يا مولاي!"))
 			else:
 				pending = "war"
-				_say(_L("Declare war on %s? Say YES to confirm." % castle_name(1 - t), "نعلن الحرب على %s؟ قل نعم للتأكيد." % castle_name(1 - t, true)))
+				pending_to = wt
+				_say(_L("Declare war on %s? Say YES to confirm." % castle_name(wt), "نعلن الحرب على %s؟ قل نعم للتأكيد." % castle_name(wt, true)))
 		"yes":
 			if pending == "war":
 				pending = ""
-				kingdom.cmd("war")
+				kingdom.cmd("war", {"to": pending_to if pending_to >= 0 else kingdom.target_team()})
 				_say(_L("War is declared! The army will march.", "أُعلنت الحرب! الجيش سيزحف."))
 			else:
 				_say(_L("Yes, my king? Tell me what to do.", "نعم يا مولاي؟ قلّي شنو تبي."))
@@ -345,7 +361,7 @@ func _do(a: Dictionary) -> void:
 				kingdom._show_compose("")
 				_say(_L("Write your words, my king.", "اكتب كلامك يا مولاي."))
 			else:
-				kingdom.cmd("letter", {"text": text.substr(0, 240)})
+				kingdom.cmd("letter", {"text": text.substr(0, 240), "to": int(a.get("to", kingdom.target_team()))})
 				_say(_L("The messenger rides with your letter: \"%s\"" % text, "الرسول انطلق بالرسالة: \"%s\"" % text))
 		"garrison":
 			var pct: int = int(a.get("pct", -1))
@@ -367,7 +383,7 @@ func _do(a: Dictionary) -> void:
 
 
 func _order(a: Dictionary) -> void:
-	var t: int = kingdom.my_team
+	var t: int = kingdom.vteam()
 	var mode: int = int(a.mode)
 	var mask: int = int(a.mask)
 	var where: String = String(a.where)
@@ -376,8 +392,7 @@ func _order(a: Dictionary) -> void:
 	if where == "home":
 		pos = kingdom.home_pos(t)
 	elif where == "gate":
-		pos = kingdom.gate_in(t) + Vector3(0, 0, -kingdom.dz_of(t) * -8.0)
-		pos = Vector3(0, 0, -kingdom.dz_of(t) * 62.0)
+		pos = kingdom.lw(t, Vector3(0, 0, -62.0))
 	elif where == "here":
 		pos = h.position if h != null else kingdom.home_pos(t)
 	battle.order_at(mode, mask, pos, -1)
@@ -385,8 +400,8 @@ func _order(a: Dictionary) -> void:
 	var ar := ""
 	match mode:
 		1:
-			en = "The army advances on %s!" % castle_name(1 - t)
-			ar = "الجيش يتقدم نحو %s!" % castle_name(1 - t, true)
+			en = "The army advances on %s!" % castle_name(kingdom.target_team())
+			ar = "الجيش يتقدم نحو %s!" % castle_name(kingdom.target_team(), true)
 		3:
 			en = "CHARGE!"
 			ar = "هجووم!"
@@ -405,7 +420,7 @@ func _order(a: Dictionary) -> void:
 
 
 func _status(what: String) -> void:
-	var t: int = kingdom.my_team
+	var t: int = kingdom.vteam()
 	var vn := 0
 	var sw := 0
 	var ar_ := 0
@@ -424,28 +439,39 @@ func _status(what: String) -> void:
 
 
 func _zone(p: Vector3) -> Array:
-	var t: int = kingdom.my_team
-	var dz: float = kingdom.dz_of(t)
-	var d: float = -dz * p.z          # + = toward my castle side... (my castle sits at -dz*73)
-	var depth: float = p.z * -dz      # distance along my axis (positive behind my front wall)
-	var gate := Vector3(0, 0, -dz * 73.0)
+	var t: int = kingdom.vteam()
+	var gate: Vector3 = kingdom.lw(t, Vector3(0, 0, -73.0))
 	var dist := int(p.distance_to(gate))
+	var l: Vector3 = kingdom.wl(t, p)
 	var side_en := "in the middle"
 	var side_ar := "في الوسط"
-	if p.x < -20.0:
+	if l.x < -20.0:
 		side_en = "on the left flank"
 		side_ar = "على الجناح الأيسر"
-	elif p.x > 20.0:
+	elif l.x > 20.0:
 		side_en = "on the right flank"
 		side_ar = "على الجناح الأيمن"
-	if depth > 60.0 and absf(d) < 0.0:
-		pass
 	return [dist, side_en, side_ar]
+
+
+# Which kingdom do these sightings mostly belong to?
+func _main_team(s: Array) -> int:
+	var cnt := {}
+	for e in s:
+		var tm: int = int(e.get("team", 0))
+		cnt[tm] = int(cnt.get(tm, 0)) + 1
+	var best: int = kingdom.target_team()
+	var bn := 0
+	for k in cnt.keys():
+		if int(cnt[k]) > bn:
+			bn = int(cnt[k])
+			best = int(k)
+	return best
 
 
 func _enemy_where() -> void:
 	var s: Array = mapv.enemy_sightings()
-	var t: int = kingdom.my_team
+	var t: int = kingdom.vteam()
 	if s.is_empty():
 		_say(_L("No enemy in sight, my king. The fog hides them - send scouts or advance.", "ما نشوف العدو يا مولاي. الضباب يخبّيهم - ابعث كشافة او تقدّم."))
 		return
@@ -457,7 +483,8 @@ func _enemy_where() -> void:
 	cx /= s.size()
 	cz /= s.size()
 	var z: Array = _zone(Vector3(cx, 0, cz))
-	_say(_L("%d soldiers of %s, about %d m from our gate, %s." % [s.size(), castle_name(1 - t), z[0], z[1]], "%d جندي من %s، تقريباً %d متر من بوابتنا، %s." % [s.size(), castle_name(1 - t, true), z[0], z[2]]))
+	var mt := _main_team(s)
+	_say(_L("%d soldiers of %s, about %d m from our gate, %s." % [s.size(), castle_name(mt), z[0], z[1]], "%d جندي من %s، تقريباً %d متر من بوابتنا، %s." % [s.size(), castle_name(mt, true), z[0], z[2]]))
 	mapv.add_ping(Vector3(cx, 0, cz))
 
 
@@ -478,9 +505,8 @@ func _process(dt: float) -> void:
 	var s: Array = mapv.enemy_sightings()
 	if s.is_empty():
 		return
-	var t: int = kingdom.my_team
-	var dz: float = kingdom.dz_of(t)
-	var gate := Vector3(0, 0, -dz * 73.0)
+	var t: int = kingdom.vteam()
+	var gate: Vector3 = kingdom.lw(t, Vector3(0, 0, -73.0))
 	var close_n := 0
 	var cx := 0.0
 	var cz := 0.0
@@ -497,8 +523,9 @@ func _process(dt: float) -> void:
 	var z: Array = _zone(Vector3(cx, 0, cz))
 	mapv.add_ping(Vector3(cx, 0, cz))
 	battle.sfx.play_ui("horn", -2.0)
-	var en := "My king! A scout reports: %d soldiers of %s are near - about %d m from our gate, %s." % [close_n, castle_name(1 - t), z[0], z[1]]
-	var ar := "يا مولاي! الكشاف يبلغ: %d جندي من %s قريبين - حوالي %d متر من البوابة، %s." % [close_n, castle_name(1 - t, true), z[0], z[2]]
+	var mt2 := _main_team(s)
+	var en := "My king! A scout reports: %d soldiers of %s are near - about %d m from our gate, %s." % [close_n, castle_name(mt2), z[0], z[1]]
+	var ar := "يا مولاي! الكشاف يبلغ: %d جندي من %s قريبين - حوالي %d متر من البوابة، %s." % [close_n, castle_name(mt2, true), z[0], z[2]]
 	_say(_L(en, ar), "SCOUT" if not lang_ar else "الكشاف")
 	_scout_modal(en, ar)
 
@@ -546,7 +573,7 @@ func _update_talk() -> void:
 				talk_kind = "messenger"
 			elif kingdom.fortress.npc_near("advisor", h.position, 7.0):
 				talk_kind = "advisor"
-			elif h.position.distance_to(kingdom.fortress.throne_pos[kingdom.my_team]) < 6.0:
+			elif h.position.distance_to(kingdom.fortress.throne_pos[kingdom.vteam()]) < 6.0:
 				talk_kind = "throne"
 	talk_btn.visible = talk_kind != ""
 	if talk_kind == "messenger":
