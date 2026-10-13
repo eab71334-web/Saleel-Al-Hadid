@@ -41,18 +41,24 @@ func _c(parent: Node, top: float, bot: float, h: float, mat: Material, p: Vector
 # ================================================================== build
 func build() -> void:
 	rng.seed = 1234
-	for t in 2:
+	var n: int = kingdom.nk
+	gate_l = []; gate_r = []; gate_amt = []; gate_prev = []; folk = []; folk_state = []
+	shell = []; shell_ghost = []; piles = []; board = []; throne_pos = []
+	for t in n:
+		gate_l.append(null); gate_r.append(null); gate_amt.append(0.0); gate_prev.append(false)
+		folk.append([]); folk_state.append([]); shell.append([]); shell_ghost.append([])
+		piles.append([]); board.append(null); throne_pos.append(Vector3.ZERO)
+	for t in n:
 		_build_fort(t)
-	for t in 2:
+	for t in n:
 		_sync_folk(t)
 	_make_npcs()
 
 
 func _build_fort(t: int) -> void:
-	var dz: float = kingdom.dz_of(t)
-	var b := -dz                       # local z direction towards the back of the castle
+	var b := -1.0                      # local z direction towards the back of the castle (root is rotated per kingdom)
 	var root: Node3D = battle.castle_roots[t]
-	var tc := Color(0.12, 0.32, 0.95) if t == 0 else Color(0.9, 0.12, 0.1)
+	var tc: Color = battle.team_col(t)
 	var stone := _m(Color(0.55, 0.53, 0.5), 0.95)
 	var stone_d := _m(Color(0.42, 0.4, 0.38), 0.95)
 	var cloth := _m(tc, 0.8, 0.0, 0.5)
@@ -156,8 +162,8 @@ func _build_fort(t: int) -> void:
 
 	# gate guards (decoration)
 	for sx in [-7.5, 7.5]:
-		var g = _puppet("sword", t, Vector3(sx, 0, 0) + Vector3(0, 0, -dz * 70.0))
-		g.tyaw = 0.0 if t == 0 else PI
+		var g = _puppet("sword", t, kingdom.lw(t, Vector3(sx, 0, -70.0)))
+		g.tyaw = kingdom.ang(t)
 		guards.append(g)
 
 
@@ -285,13 +291,13 @@ func _set_throne_world(t: int, kz: float, b: float) -> void:
 
 
 func hall_pos(t: int) -> Vector3:
-	var dz: float = kingdom.dz_of(t)
-	return Vector3(0, 0, -dz * 111.5)
+	return kingdom.lw(t, Vector3(0, 0, -111.5))
 
 
 func in_hall(t: int, p: Vector3) -> bool:
-	var d: float = kingdom.depth(t, p)
-	return d > 104.0 and d < 119.0 and absf(p.x) < 10.2
+	var l: Vector3 = kingdom.wl(t, p)
+	var d: float = -l.z
+	return d > 104.0 and d < 119.0 and absf(l.x) < 10.2
 
 
 func refresh_hall(t: int) -> void:
@@ -315,7 +321,7 @@ func _puppet(kind: String, t: int, pos: Vector3):
 	u.setup(kind, t, -500, battle)
 	u.puppet = true
 	u.tpos = pos
-	u.rotation.y = 0.0 if t == 0 else PI
+	u.rotation.y = kingdom.ang(t)
 	u.tyaw = u.rotation.y
 	return u
 
@@ -328,31 +334,31 @@ func _folk_target(t: int) -> int:
 func _sync_folk(t: int) -> void:
 	var want := _folk_target(t)
 	while folk[t].size() < want:
-		var dz: float = kingdom.dz_of(t)
-		var p := Vector3(rng.randf_range(-24.0, 24.0), 0, -dz * rng.randf_range(80.0, 112.0))
+		var p: Vector3 = kingdom.lw(t, Vector3(rng.randf_range(-24.0, 24.0), 0, -rng.randf_range(80.0, 112.0)))
 		var f = _puppet("villager", t, p)
 		folk[t].append(f)
 		folk_state[t].append({"wait": rng.randf_range(0.0, 3.0), "to": p})
 
 
 func sync() -> void:
-	for t in 2:
+	for t in kingdom.nk:
 		_sync_folk(t)
 
 
 func _make_npcs() -> void:
 	var t: int = kingdom.my_team
-	var dz: float = kingdom.dz_of(t)
 	var defs := {"messenger": [-5.0, "MESSENGER"], "advisor": [5.0, "ADVISOR"]}
 	for k in defs.keys():
-		var p := Vector3(defs[k][0], 0, -dz * 92.0)
+		var p: Vector3 = kingdom.lw(t, Vector3(defs[k][0], 0, -92.0))
 		var u = _puppet("villager", t, p)
 		u.tyaw = u.rotation.y
 		npcs[k] = u
 		var lb := Label3D.new()
 		lb.text = defs[k][1]
 		lb.font_size = 54
-		lb.pixel_size = 0.01
+		lb.pixel_size = 0.0007
+		lb.fixed_size = true
+		lb.visibility_range_end = 22.0
 		lb.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 		lb.no_depth_test = true
 		lb.outline_size = 14
@@ -379,7 +385,7 @@ func _process(dt: float) -> void:
 	board_t -= dt
 	if board_t <= 0.0:
 		board_t = 0.5
-		for t in 2:
+		for t in kingdom.nk:
 			refresh_hall(t)
 	var hh = battle.heroes.get(battle.my_id)
 	var now_in: bool = hh != null and is_instance_valid(hh) and not hh.dead and in_hall(kingdom.my_team, hh.position)
@@ -391,22 +397,21 @@ func _process(dt: float) -> void:
 		for n in shell_ghost[mt]:
 			n.transparency = 0.8 if now_in else 0.0
 	# gates swing open / closed
-	for t in 2:
+	for t in kingdom.nk:
 		var open: bool = kingdom.gate_open[t]
 		if open != gate_prev[t]:
 			gate_prev[t] = open
-			var gp := Vector3(0, 3, -kingdom.dz_of(t) * 73.0)
+			var gp: Vector3 = kingdom.lw(t, Vector3(0, 3, -73.0))
 			battle.sfx.play("thud", gp, -2.0, 0.55)
 		gate_amt[t] = move_toward(gate_amt[t], 1.0 if open else 0.0, dt * 1.4)
-		var a: float = deg_to_rad(100.0) * kingdom.dz_of(t) * gate_amt[t]
+		var a: float = deg_to_rad(100.0) * gate_amt[t]
 		if gate_l[t] != null:
 			gate_l[t].rotation.y = a
 			gate_r[t].rotation.y = -a
 	# townsfolk wander inside the walls
-	for t in 2:
+	for t in kingdom.nk:
 		if kingdom.fallen[t]:
 			continue
-		var dz: float = kingdom.dz_of(t)
 		for i in folk[t].size():
 			var f = folk[t][i]
 			var st: Dictionary = folk_state[t][i]
@@ -419,11 +424,11 @@ func _process(dt: float) -> void:
 			if d.length() < 0.6:
 				st.wait = rng.randf_range(1.5, 6.0)
 				var tx := rng.randf_range(-27.0, 27.0)
-				var tz := -dz * rng.randf_range(80.5, 117.0)
+				var tz := -rng.randf_range(80.5, 117.0)
 				if rng.randf() < 0.45:
 					tx = rng.randf_range(-9.0, 9.0)
-					tz = -dz * rng.randf_range(80.5, 100.0)
-				st.to = Vector3(tx, 0, tz)
+					tz = -rng.randf_range(80.5, 100.0)
+				st.to = kingdom.lw(t, Vector3(tx, 0, tz))
 			else:
 				var step := d.normalized() * 1.6 * dt
 				f.tpos += step
