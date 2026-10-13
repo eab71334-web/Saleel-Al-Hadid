@@ -48,6 +48,8 @@ var net
 var is_srv := true
 var my_team := 0
 
+var nk := 2
+var war_pairs := {}
 var gold := [START_GOLD, START_GOLD]
 var food := [START_FOOD, START_FOOD]
 var level := [1, 1]
@@ -72,6 +74,7 @@ var extras := [{}, {}]
 var fires := [[], []]
 var vis_ready := false
 var gate_open := [false, false]
+var view_team := -1
 var fortress: Node = null
 var mapv: Node = null
 var court: Node = null
@@ -81,6 +84,7 @@ var msgs := {}
 var next_msg := 1
 var challenge_t := 0.0
 var duel_t := 0.0
+var duel_pair := [0, 1]
 var duel_done := false
 var duel_ring: MeshInstance3D = null
 var respawn := {}
@@ -98,15 +102,23 @@ var ui := {}
 
 
 # ================================================================== helpers
-func dz_of(t: int) -> float:
-	return 1.0 if t == 0 else -1.0
+func ang(t: int) -> float:
+	return battle.ang(t)
+
+
+func lw(t: int, v: Vector3) -> Vector3:
+	return battle.lw(t, v)
+
+
+func wl(t: int, p: Vector3) -> Vector3:
+	return battle.wl(t, p)
 
 
 func team_of(owner: int) -> int:
 	if owner < 0:
 		return -100 - owner
 	var p: Dictionary = net.players.get(owner, {"idx": 0})
-	return int(p.idx) % 2
+	return int(p.idx) % nk
 
 
 func owner_of_team(t: int) -> int:
@@ -114,6 +126,43 @@ func owner_of_team(t: int) -> int:
 		if team_of(id) == t:
 			return id
 	return -100 - t
+
+
+func pair_key(a: int, b: int) -> int:
+	return mini(a, b) * 10 + maxi(a, b)
+
+
+func at_war(a: int, b: int) -> bool:
+	return war_pairs.has(pair_key(a, b))
+
+
+func any_war() -> bool:
+	return not war_pairs.is_empty()
+
+
+func declare_war(a: int, b: int) -> void:
+	war_pairs[pair_key(a, b)] = true
+	battle.war = true
+
+
+func alive_count() -> int:
+	var n := 0
+	for t in nk:
+		if not fallen[t]:
+			n += 1
+	return n
+
+
+# The kingdom team t would attack / talk to by default.
+func foe_of(t: int) -> int:
+	return battle.foe(t)
+
+
+func target_castle(u) -> int:
+	var ft: int = battle.foe(u.team)
+	if ft >= 0 and ft != u.team and battle.hostile(u.team, ft) and castle_alive(ft):
+		return ft
+	return -1
 
 
 func rank_of(t: int) -> String:
@@ -135,48 +184,53 @@ func king_name(t: int) -> String:
 	for id in net.players.keys():
 		if team_of(id) == t:
 			return String(net.players[id].name)
-	return "King of %s (AI)" % ("Blue" if t == 0 else "Red")
+	return "King of %s (AI)" % battle.team_name(t)
 
 
 func plot_pos(t: int, i: int) -> Vector3:
 	var lx: float = PLOT_LX[i % 6]
 	var ld: float = PLOT_LD[i / 6]
-	return Vector3(lx, 0.0, dz_of(t) * (-72.0 - ld))
+	return lw(t, Vector3(lx, 0.0, -72.0 - ld))
 
 
 func depot(t: int) -> Vector3:
-	return Vector3(0.0, 0.0, dz_of(t) * -86.0)
+	return lw(t, Vector3(0.0, 0.0, -86.0))
 
 
 func home_pos(t: int) -> Vector3:
-	return Vector3(0.0, 0.0, dz_of(t) * -90.0)
+	return lw(t, Vector3(0.0, 0.0, -90.0))
 
 
 func gate_in(t: int) -> Vector3:
-	return Vector3(0.0, 0.0, dz_of(t) * -76.0)
+	return lw(t, Vector3(0.0, 0.0, -76.0))
 
 
 func gate_out(t: int) -> Vector3:
-	return Vector3(0.0, 0.0, dz_of(t) * -69.0)
+	return lw(t, Vector3(0.0, 0.0, -69.0))
 
 
 # ---- walled city geometry (depth = metres behind the front wall line, positive = inside) ----
 func depth(t: int, p: Vector3) -> float:
-	return -dz_of(t) * p.z
+	return -wl(t, p).z
 
 
 func inside(t: int, p: Vector3) -> bool:
-	var d := depth(t, p)
-	return absf(p.x) < 34.4 and d > 74.5 and d < 120.0
+	var l := wl(t, p)
+	var d := -l.z
+	return absf(l.x) < 34.4 and d > 74.5 and d < 120.0
 
 
 func inside_any(p: Vector3) -> bool:
-	return inside(0, p) or inside(1, p)
+	for t in nk:
+		if inside(t, p):
+			return true
+	return false
 
 
 func _solid(t: int, p: Vector3) -> bool:
-	var d := depth(t, p)
-	var ax := absf(p.x)
+	var l := wl(t, p)
+	var d := -l.z
+	var ax := absf(l.x)
 	# throne hall walls (door gap in the middle of the front wall)
 	if d > 103.8 and d < 119.2 and ax < 11.2:
 		if d < 105.2 and ax > 2.4:
@@ -198,10 +252,12 @@ func _solid(t: int, p: Vector3) -> bool:
 
 # Walls stop units (except through the open gate). Called after every step of a unit.
 func constrain(u, oldp: Vector3) -> void:
-	for t in 2:
+	for t in nk:
 		if fallen[t]:
 			continue
 		var p: Vector3 = u.position
+		if p.length() < battle.ring_r - 8.0:
+			continue
 		if _solid(t, p):
 			var a := Vector3(p.x, p.y, oldp.z)
 			var b := Vector3(oldp.x, p.y, p.z)
@@ -232,14 +288,14 @@ func via(t: int, from: Vector3, to: Vector3) -> Vector3:
 
 
 func _update_gates() -> void:
-	for t in 2:
+	for t in nk:
 		var open := false
 		if fallen[t]:
 			open = true
 		else:
-			var gz := -dz_of(t) * 73.0
+			var gp: Vector3 = lw(t, Vector3(0, 0, -73.0))
 			for u in battle.units.values():
-				if u.team == t and not u.dead and Vector2(u.position.x, u.position.z - gz).length() < 9.5:
+				if u.team == t and not u.dead and Vector2(u.position.x - gp.x, u.position.z - gp.z).length() < 9.5:
 					open = true
 					break
 		if battle.intro and t == my_team:
@@ -248,7 +304,7 @@ func _update_gates() -> void:
 
 
 func castle_gate(t: int) -> Vector3:
-	return Vector3(0.0, 0.0, dz_of(t) * -70.0)
+	return lw(t, Vector3(0.0, 0.0, -70.0))
 
 
 func castle_alive(t: int) -> bool:
@@ -301,7 +357,20 @@ func setup() -> void:
 	net = battle.net
 	is_srv = battle.is_srv
 	my_team = battle.my_team
-	for t in 2:
+	nk = battle.nk
+	gold = []; food = []; level = []; slots = []; castle_hp = []; fallen = []
+	tree_pos = []; tree_food = []; pop_used = []; vill_n = []; soldier_n = []; queue = []
+	letter_cd = []; decree_cd = []; plot_type = []; plot_nodes = []; plot_marks = []
+	tree_nodes = []; extras = []; fires = []; gate_open = []; ai_next = []; ai_info = []; march_cd = []
+	for t in nk:
+		gold.append(START_GOLD); food.append(START_FOOD); level.append(1)
+		slots.append([]); castle_hp.append(CASTLE_HP[0]); fallen.append(false)
+		tree_pos.append([]); tree_food.append([]); pop_used.append(0); vill_n.append(0); soldier_n.append(0)
+		queue.append([]); letter_cd.append(0.0); decree_cd.append({"tax": 0.0, "feast": 0.0})
+		plot_type.append([]); plot_nodes.append([]); plot_marks.append([]); tree_nodes.append([])
+		extras.append({}); fires.append([]); gate_open.append(false); ai_next.append(0.0)
+		ai_info.append({}); march_cd.append(0.0)
+	for t in nk:
 		var a := []
 		a.resize(NSLOTS)
 		a.fill(0)
@@ -336,9 +405,9 @@ func setup() -> void:
 func _make_plot_marks() -> void:
 	var dirt: StandardMaterial3D = battle._mat(Color(0.33, 0.25, 0.15), 1.0)
 	var bm: BoxMesh = battle._box(Vector3(5.2, 0.06, 4.4))
-	for t in 2:
+	for t in nk:
 		for i in NSLOTS:
-			var m: MeshInstance3D = battle._mesh(battle, bm, dirt, plot_pos(t, i) + Vector3(0, 0.03, 0), Vector3.ZERO, false)
+			var m: MeshInstance3D = battle._mesh(battle, bm, dirt, plot_pos(t, i) + Vector3(0, 0.03, 0), Vector3(0, ang(t), 0), false)
 			plot_marks[t][i] = m
 
 
@@ -357,14 +426,14 @@ func _make_trees() -> void:
 	fm.height = 0.4
 	fm.radial_segments = 6
 	fm.rings = 3
-	for t in 2:
+	for t in nk:
 		var rng := RandomNumberGenerator.new()
 		rng.seed = 7000 + t
 		for i in TREES_PER_TEAM:
 			var side := -1.0 if i % 2 == 0 else 1.0
-			var x := side * rng.randf_range(46.0, 68.0)
+			var x := side * (rng.randf_range(46.0, 68.0) if nk <= 4 else rng.randf_range(41.0, 52.0))
 			var ld := rng.randf_range(6.0, 36.0)
-			var p := Vector3(x, 0.0, dz_of(t) * (-71.5 + ld))
+			var p: Vector3 = lw(t, Vector3(x, 0.0, -71.5 + ld))
 			tree_pos[t].append(p)
 			tree_food[t].append(TREE_MAX)
 			var root := Node3D.new()
@@ -430,7 +499,7 @@ func _make_fire(parent: Node3D, p: Vector3) -> Dictionary:
 func _make_house(t: int) -> Node3D:
 	var n := Node3D.new()
 	var wall: StandardMaterial3D = battle._mat(Color(0.86, 0.79, 0.62), 0.95)
-	var roofc := Color(0.2, 0.34, 0.72) if t == 0 else Color(0.72, 0.2, 0.17)
+	var roofc: Color = battle.team_col(t).darkened(0.25)
 	var roof: StandardMaterial3D = battle._mat(roofc, 0.8)
 	var dark: StandardMaterial3D = battle._mat(Color(0.25, 0.16, 0.09), 0.9)
 	var glow: StandardMaterial3D = battle._mat(Color(1.0, 0.8, 0.4), 0.5, 0.0, 2.0)
@@ -448,7 +517,7 @@ func _make_house(t: int) -> Node3D:
 
 func _make_barracks(t: int) -> Node3D:
 	var n := Node3D.new()
-	var tc := Color(0.12, 0.32, 0.95) if t == 0 else Color(0.9, 0.12, 0.1)
+	var tc: Color = battle.team_col(t)
 	var wall: StandardMaterial3D = battle._mat(Color(0.38, 0.27, 0.19), 0.95)
 	var roof: StandardMaterial3D = battle._mat(Color(0.2, 0.17, 0.16), 0.85)
 	var dark: StandardMaterial3D = battle._mat(Color(0.14, 0.09, 0.06), 0.9)
@@ -479,7 +548,7 @@ func _set_plot(t: int, i: int, typ: int, animate: bool) -> void:
 		return
 	var n: Node3D = _make_house(t) if typ == 1 else _make_barracks(t)
 	n.position = plot_pos(t, i)
-	n.rotation.y = 0.0 if t == 0 else PI
+	n.rotation.y = ang(t)
 	battle.add_child(n)
 	plot_nodes[t][i] = n
 	if animate:
@@ -493,7 +562,7 @@ func _set_plot(t: int, i: int, typ: int, animate: bool) -> void:
 func _refresh_visuals() -> void:
 	if fortress != null:
 		fortress.sync()
-	for t in 2:
+	for t in nk:
 		for i in NSLOTS:
 			var want: int = int(slots[t][i])
 			if want != int(plot_type[t][i]):
@@ -509,7 +578,7 @@ func _refresh_visuals() -> void:
 			ex.l2.visible = level[t] >= 2
 			ex.l3.visible = level[t] >= 3
 			if vis_ready and ex.l2.visible and not was2:
-				battle._burst(Vector3(0, 16, -112.0 * dz_of(t)), Color(1, 0.9, 0.5), 30, 8.0, true)
+				battle._burst(lw(t, Vector3(0, 16, -112.0)), Color(1, 0.9, 0.5), 30, 8.0, true)
 		var maxhp: float = CASTLE_HP[level[t] - 1]
 		var ratio: float = castle_hp[t] / maxhp
 		for k in fires[t].size():
@@ -520,38 +589,54 @@ func _refresh_visuals() -> void:
 
 # ================================================================== state sync
 func _state() -> Dictionary:
-	var tf0 := []
-	var tf1 := []
-	for v in tree_food[0]:
-		tf0.append(int(v))
-	for v in tree_food[1]:
-		tf1.append(int(v))
-	return {
-		"w": battle.war, "g": [int(gold[0]), int(gold[1])], "f": [int(food[0]), int(food[1])],
-		"l": [level[0], level[1]], "s": [slots[0], slots[1]],
-		"h": [int(castle_hp[0]), int(castle_hp[1])], "tf": [tf0, tf1],
-		"pu": [pop_used[0], pop_used[1]], "vn": [vill_n[0], vill_n[1]], "sn": [soldier_n[0], soldier_n[1]],
-		"q": [queue[0].size(), queue[1].size()], "fl": [fallen[0], fallen[1]],
-	}
+	var tf := []
+	var gl := []
+	var fl := []
+	var lv := []
+	var sl := []
+	var hp := []
+	var pu := []
+	var vn := []
+	var sn := []
+	var qq := []
+	var fa := []
+	for t in nk:
+		var a := []
+		for v in tree_food[t]:
+			a.append(int(v))
+		tf.append(a)
+		gl.append(int(gold[t]))
+		fl.append(int(food[t]))
+		lv.append(level[t])
+		sl.append(slots[t])
+		hp.append(int(castle_hp[t]))
+		pu.append(pop_used[t])
+		vn.append(vill_n[t])
+		sn.append(soldier_n[t])
+		qq.append(queue[t].size())
+		fa.append(fallen[t])
+	return {"w": battle.war, "wp": war_pairs.keys(), "g": gl, "f": fl, "l": lv, "s": sl, "h": hp, "tf": tf,
+		"pu": pu, "vn": vn, "sn": sn, "q": qq, "fl": fa}
 
 
 func _apply_state(s: Dictionary) -> void:
 	battle.war = bool(s.w)
-	gold = [float(s.g[0]), float(s.g[1])]
-	food = [float(s.f[0]), float(s.f[1])]
-	level = [int(s.l[0]), int(s.l[1])]
-	slots = [s.s[0].duplicate(), s.s[1].duplicate()]
-	castle_hp = [float(s.h[0]), float(s.h[1])]
-	for t in 2:
+	war_pairs = {}
+	for k in s.wp:
+		war_pairs[int(k)] = true
+	for t in nk:
+		gold[t] = float(s.g[t])
+		food[t] = float(s.f[t])
+		level[t] = int(s.l[t])
+		slots[t] = s.s[t].duplicate()
+		castle_hp[t] = float(s.h[t])
 		for i in tree_food[t].size():
 			tree_food[t][i] = float(s.tf[t][i])
-	pop_used = [int(s.pu[0]), int(s.pu[1])]
-	vill_n = [int(s.vn[0]), int(s.vn[1])]
-	soldier_n = [int(s.sn[0]), int(s.sn[1])]
-	var q0: int = int(s.q[0])
-	var q1: int = int(s.q[1])
-	queue = [_fake_q(q0), _fake_q(q1)]
-	fallen = [bool(s.fl[0]), bool(s.fl[1])]
+		pop_used[t] = int(s.pu[t])
+		vill_n[t] = int(s.vn[t])
+		soldier_n[t] = int(s.sn[t])
+		queue[t] = _fake_q(int(s.q[t]))
+		fallen[t] = bool(s.fl[t])
 	_refresh_visuals()
 
 
@@ -593,7 +678,7 @@ func cmd(act: String, data := {}) -> void:
 	if battle.over:
 		return
 	if is_srv:
-		_cmd(battle.my_id, act, data)
+		_cmd(battle.ctrl_owner(), act, data)
 	else:
 		cmd_msg.rpc_id(1, act, data)
 
@@ -708,12 +793,14 @@ func _cmd(owner: int, act: String, data: Dictionary) -> void:
 					fu.hp = fu.max_hp
 			if human: toast_team(t, "The royal feast heals your army!")
 		"challenge":
-			if not battle.war:
+			var ct: int = int(data.get("to", battle.foe(t)))
+			if ct == t or ct < 0 or ct >= nk or not at_war(t, ct):
 				if human: toast_team(t, "Declare war first!")
 				return
 			if battle.duel_active or duel_done or challenge_t > 0.0:
 				return
 			challenge_t = 3.5
+			duel_pair = [t, ct]
 			ev_all("summon", {"by": t})
 		"letter":
 			var text: String = String(data.get("text", "")).strip_edges()
@@ -723,22 +810,26 @@ func _cmd(owner: int, act: String, data: Dictionary) -> void:
 				if human: toast_team(t, "Your messenger is still preparing (%ds)" % ceili(letter_cd[t]))
 				return
 			letter_cd[t] = LETTER_CD
-			_send_letter(t, text.substr(0, 240), owner)
+			var lt: int = int(data.get("to", battle.foe(t)))
+			_send_letter(t, text.substr(0, 240), owner, lt)
 		"war":
-			if battle.war or fallen[0] or fallen[1]:
+			var wt: int = int(data.get("to", battle.foe(t)))
+			if wt == t or wt < 0 or wt >= nk or fallen[t] or fallen[wt] or at_war(t, wt):
 				return
-			battle.war = true
+			declare_war(t, wt)
 			battle.war_t0 = battle.game_time
-			ev_all("war", {"by": t})
+			ev_all("war", {"by": t, "to": wt})
 	state_t = 0.0
 
 
-func _send_letter(from_t: int, text: String, owner: int) -> void:
+func _send_letter(from_t: int, text: String, owner: int, to_t := -1) -> void:
+	if to_t < 0 or to_t >= nk or to_t == from_t:
+		to_t = battle.foe(from_t)
 	var id := next_msg
 	next_msg += 1
-	var dist := absf(gate_out(0).z - gate_out(1).z)
-	msgs[id] = {"from": from_t, "t": 0.0, "dur": dist / MSG_SPEED, "text": text, "owner": owner, "node": null}
-	ev_all("msg_spawn", {"id": id, "from": from_t})
+	var dist: float = gate_out(from_t).distance_to(gate_out(to_t))
+	msgs[id] = {"from": from_t, "to": to_t, "t": 0.0, "dur": dist / MSG_SPEED, "text": text, "owner": owner, "node": null}
+	ev_all("msg_spawn", {"id": id, "from": from_t, "to": to_t})
 	if owner >= 0:
 		toast_team(from_t, "Messenger sent!")
 
@@ -752,20 +843,26 @@ func _ev(kind: String, d: Dictionary) -> void:
 				battle._toast(String(d.text), 2.6)
 		"level":
 			var t: int = int(d.team)
-			battle.sfx.play("horn", Vector3(0, 10, -73.0 * dz_of(t)), 2.0)
+			battle.sfx.play("horn", lw(t, Vector3(0, 10, -73.0)), 2.0)
 			if t == my_team:
 				battle.banner("CASTLE LEVEL %d" % int(d.lvl), Color(1.0, 0.85, 0.3), 1.6)
 		"war":
 			var by: int = int(d.by)
-			battle.war = true
+			var wto: int = int(d.get("to", battle.foe(by)))
+			if not is_srv:
+				declare_war(by, wto)
 			battle.war_t0 = battle.game_time
 			battle.sfx.play_ui("horn", 2.0)
 			var mine_declared := by == my_team
-			battle.banner("WAR!" if mine_declared else "%s DECLARES WAR!" % king_name(by).to_upper(), Color(1.0, 0.25, 0.2), 3.0)
-			var enemy_c := Vector3(0, 6, 73.0 * dz_of(my_team))
-			battle.cine_orbit(Vector3(0, 6, -73.0 * dz_of(1 - my_team)) if not mine_declared else Vector3(0, 6, -73.0 * dz_of(1 - my_team)), 70.0, 28.0, 4.0, 0.7)
+			var involved := mine_declared or wto == my_team
+			if involved or nk == 2:
+				battle.banner("WAR!" if mine_declared else "%s DECLARES WAR!" % king_name(by).to_upper(), Color(1.0, 0.25, 0.2), 3.0)
+				var tgt: int = wto if mine_declared else by
+				battle.cine_orbit(lw(tgt, Vector3(0, 6, -73.0)), 70.0, 28.0, 4.0, 0.7)
+			else:
+				battle._toast("%s declared war on %s!" % [king_name(by), king_name(wto)], 3.5)
 		"msg_spawn":
-			_vis_msg_spawn(int(d.id), int(d.from))
+			_vis_msg_spawn(int(d.id), int(d.from), int(d.get("to", battle.foe(int(d.from)))))
 		"msg_end":
 			_vis_msg_end(int(d.id), bool(d.ok))
 		"letter":
@@ -774,19 +871,21 @@ func _ev(kind: String, d: Dictionary) -> void:
 				_show_reader(String(d.name), String(d.text))
 		"march":
 			if int(d.team) == my_team:
-				var dzm := dz_of(my_team)
-				battle.cine_shot(Vector3(10, 4.5, -dzm * 58.0), Vector3(-4, 6.5, -dzm * 54.0), Vector3(0, 4.0, -dzm * 74.0), Vector3(0, 3.0, -dzm * 66.0), 6.0)
+				battle.cine_shot(lw(my_team, Vector3(10, 4.5, -58.0)), lw(my_team, Vector3(-4, 6.5, -54.0)), lw(my_team, Vector3(0, 4.0, -74.0)), lw(my_team, Vector3(0, 3.0, -66.0)), 6.0)
 				battle.banner("THE ARMY MARCHES!", Color(1.0, 0.85, 0.3), 3.0)
 				battle.sfx.play_ui("horn", -1.0)
 		"summon":
 			battle.sfx.play_ui("horn", 2.0)
 			battle.banner("THE KINGS ARE SUMMONED TO THE FIELD OF HONOR!", Color(1.0, 0.75, 0.25), 3.4)
 		"duel_start":
+			battle.duel_teams = [int(d.get("a", 0)), int(d.get("b", 1))]
 			_duel_visual_start(Vector3(d.c))
 		"duel_end":
 			_duel_visual_end()
 		"castle_fall":
 			_castle_fall_visual(int(d.team))
+			if int(d.team) == my_team and nk > 2:
+				battle._toast("Your kingdom has fallen. You are now watching.", 6.0)
 		"king_down":
 			if int(d.team) == my_team:
 				battle._toast("Your king has fallen! He will return soon...", 3.0)
@@ -796,18 +895,17 @@ func _ev(kind: String, d: Dictionary) -> void:
 
 func _castle_fall_visual(t: int) -> void:
 	var root: Node3D = battle.castle_roots[t]
-	var dz := dz_of(t)
-	var cz := -73.0 * dz
-	battle.cine_orbit(Vector3(0, 6, cz), 48.0, 24.0, 6.5, 1.1)
+	var cc: Vector3 = lw(t, Vector3(0, 0, -73.0))
+	battle.cine_orbit(lw(t, Vector3(0, 6, -73.0)), 48.0, 24.0, 6.5, 1.1)
 	battle._slowmo(0.45, 3.5)
 	battle.banner("THE CASTLE FALLS!", Color(1.0, 0.6, 0.2), 3.5)
 	var tw := create_tween()
 	tw.tween_property(root, "scale:y", 0.1, 3.0).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
-	tw.parallel().tween_property(root, "rotation:x", 0.07 * dz, 3.0)
+	tw.parallel().tween_property(root, "rotation:x", 0.07, 3.0)
 	for i in 14:
 		var tm := get_tree().create_timer(0.2 + i * 0.22)
 		tm.timeout.connect(func():
-			var p := Vector3(randf_range(-34.0, 34.0), randf_range(2.0, 12.0), cz)
+			var p: Vector3 = lw(t, Vector3(randf_range(-34.0, 34.0), randf_range(2.0, 12.0), -73.0))
 			battle._burst(p, Color(0.5, 0.46, 0.4), 22, 7.0, false)
 			battle.sfx.play("thud", p, 6.0, 0.7)
 			battle.shake = minf(battle.shake + 0.25, 0.7))
@@ -817,17 +915,18 @@ func _castle_fall_visual(t: int) -> void:
 
 
 # ================================================================== messengers
-func _msg_point(from_t: int, p: float) -> Vector3:
-	var z0: float = gate_out(from_t).z
-	var z1: float = gate_out(1 - from_t).z
-	var z := lerpf(z0, z1, p)
-	var lane := 14.0 * sin(p * PI) * (1.0 if from_t == 0 else -1.0)
-	return Vector3(lane, 0.0, z)
+func _msg_point(from_t: int, to_t: int, p: float) -> Vector3:
+	var a: Vector3 = gate_out(from_t)
+	var b: Vector3 = gate_out(to_t)
+	var dir: Vector3 = (b - a).normalized()
+	var perp := Vector3(-dir.z, 0.0, dir.x)
+	var pos: Vector3 = a.lerp(b, p)
+	return pos + perp * 14.0 * sin(p * PI)
 
 
 func _make_rider(t: int) -> Node3D:
 	var n := Node3D.new()
-	var tc := Color(0.12, 0.32, 0.95) if t == 0 else Color(0.9, 0.12, 0.1)
+	var tc: Color = battle.team_col(t)
 	var hm: StandardMaterial3D = battle._mat(Color(0.55, 0.38, 0.22), 0.0, 0.8)
 	var dark: StandardMaterial3D = battle._mat(Color(0.12, 0.08, 0.05), 0.0, 0.9)
 	var cloth: StandardMaterial3D = battle._mat(tc, 0.0, 0.8, 0.4)
@@ -880,16 +979,16 @@ func _make_rider(t: int) -> Node3D:
 	return n
 
 
-func _vis_msg_spawn(id: int, from_t: int) -> void:
+func _vis_msg_spawn(id: int, from_t: int, to_t: int) -> void:
 	var node := _make_rider(from_t)
 	battle.add_child(node)
-	node.position = _msg_point(from_t, 0.0)
+	node.position = _msg_point(from_t, to_t, 0.0)
 	var m: Dictionary
 	if msgs.has(id):
 		m = msgs[id]
 	else:
-		var dist := absf(gate_out(0).z - gate_out(1).z)
-		m = {"from": from_t, "t": 0.0, "dur": dist / MSG_SPEED, "text": "", "owner": 0}
+		var dist: float = gate_out(from_t).distance_to(gate_out(to_t))
+		m = {"from": from_t, "to": to_t, "t": 0.0, "dur": dist / MSG_SPEED, "text": "", "owner": 0}
 		msgs[id] = m
 	m["node"] = node
 	battle.sfx.play("horn", node.position, -6.0, 1.6)
@@ -914,17 +1013,17 @@ func _tick_messengers(dt: float) -> void:
 		var p: float = clampf(m.t / m.dur, 0.0, 1.0)
 		var node = m.get("node")
 		if node != null and is_instance_valid(node):
-			var a := _msg_point(m.from, p)
-			var b := _msg_point(m.from, minf(p + 0.02, 1.0))
+			var a := _msg_point(m.from, m.to, p)
+			var b := _msg_point(m.from, m.to, minf(p + 0.02, 1.0))
 			node.position = a + Vector3(0, absf(sin(m.t * 9.0)) * 0.22, 0)
 			if b.distance_to(a) > 0.01:
 				node.rotation.y = atan2(b.x - a.x, b.z - a.z)
 		if is_srv:
 			if p >= 1.0:
 				done.append([id, true])
-			elif battle.war:
-				var pos := _msg_point(m.from, p)
-				for e in battle.by_team[1 - int(m.from)]:
+			elif at_war(int(m.from), int(m.to)):
+				var pos := _msg_point(m.from, m.to, p)
+				for e in battle.by_team[int(m.to)]:
 					if e.dead or e.kind == "villager":
 						continue
 					if Vector2(e.position.x - pos.x, e.position.z - pos.z).length() < 3.0:
@@ -941,8 +1040,9 @@ func _tick_messengers(dt: float) -> void:
 		var owner: int = int(m.owner)
 		ev_all("msg_end", {"id": id, "ok": ok})
 		if ok:
-			ev_all("letter", {"to": 1 - from_t, "from": from_t, "name": king_name(from_t), "text": text})
-			_ai_read_letter(1 - from_t, from_t, text)
+			var to_t: int = int(m.to)
+			ev_all("letter", {"to": to_t, "from": from_t, "name": king_name(from_t), "text": text})
+			_ai_read_letter(to_t, from_t, text)
 			if owner >= 0:
 				toast_team(from_t, "Your letter was delivered.")
 		else:
@@ -953,7 +1053,7 @@ func _tick_messengers(dt: float) -> void:
 func _physics_process(dt: float) -> void:
 	if not is_srv or not battle.running or battle.over:
 		return
-	for t in 2:
+	for t in nk:
 		letter_cd[t] = maxf(0.0, letter_cd[t] - dt)
 		decree_cd[t].tax = maxf(0.0, float(decree_cd[t].tax) - dt)
 		decree_cd[t].feast = maxf(0.0, float(decree_cd[t].feast) - dt)
@@ -971,6 +1071,8 @@ func _physics_process(dt: float) -> void:
 		var r: Dictionary = ai_replies.pop_front()
 		_send_letter(int(r.team), String(r.text), -100 - int(r.team))
 	for t in battle.ai_teams:
+		if battle.admin and battle.admin_ctrl and battle.admin_view == t and not net.online:
+			continue
 		ai_next[t] -= dt
 		if ai_next[t] <= 0.0:
 			ai_next[t] = 1.5
@@ -985,8 +1087,11 @@ func _physics_process(dt: float) -> void:
 
 
 func _econ(dt: float) -> void:
-	var vn := [0, 0]
-	var sn := [0, 0]
+	var vn := []
+	var sn := []
+	for t in nk:
+		vn.append(0)
+		sn.append(0)
 	for u in battle.units.values():
 		if u.dead:
 			continue
@@ -996,7 +1101,7 @@ func _econ(dt: float) -> void:
 			sn[u.team] += 1
 	vill_n = vn
 	soldier_n = sn
-	for t in 2:
+	for t in nk:
 		var houses := count_slots(t, 1)
 		gold[t] += (houses * 0.5 + vn[t] * 0.1) * dt
 		# everybody eats
@@ -1020,28 +1125,27 @@ func _econ(dt: float) -> void:
 func _spawn_trained(t: int, item: Dictionary) -> void:
 	var kind: String = item.kind
 	var owner: int = item.owner
-	var dz := dz_of(t)
 	if kind == "villager":
-		var p := depot(t) + Vector3(randf_range(-3.0, 3.0), 0, 0)
+		var p: Vector3 = depot(t) + battle.rotv(t, Vector3(randf_range(-3.0, 3.0), 0, 0))
 		battle._make_unit("villager", t, owner, p)
 		return
 	var bpos := depot(t)
 	for i in NSLOTS:
 		if int(slots[t][i]) == 2:
-			bpos = plot_pos(t, i) + Vector3(0, 0, dz * 5.0)
+			bpos = plot_pos(t, i) + battle.rotv(t, Vector3(0, 0, 5.0))
 			break
-	var u = battle._make_unit(kind, t, owner, bpos + Vector3(randf_range(-1.5, 1.5), 0, 0))
+	var u = battle._make_unit(kind, t, owner, bpos + battle.rotv(t, Vector3(randf_range(-1.5, 1.5), 0, 0)))
 	var n := 0
 	for o in battle.units.values():
 		if o != u and not o.dead and o.team == t and o.kind == kind:
 			n += 1
 	if kind == "sword":
-		u.slot = Vector3((n % 12 - 5.5) * 1.7, 0, -dz * (3.0 + floorf(n / 12.0) * 1.8))
+		u.slot = battle.rotv(t, Vector3((n % 12 - 5.5) * 1.7, 0, -(3.0 + floorf(n / 12.0) * 1.8)))
 	elif kind == "archer":
-		u.slot = Vector3((n % 12 - 5.5) * 1.7, 0, -dz * (9.0 + floorf(n / 12.0) * 1.8))
+		u.slot = battle.rotv(t, Vector3((n % 12 - 5.5) * 1.7, 0, -(9.0 + floorf(n / 12.0) * 1.8)))
 	else:
 		var side := -1.0 if n % 2 == 0 else 1.0
-		u.slot = Vector3(side * (14.0 + float((n / 2) % 4) * 2.2), 0, -dz * (3.0 + floorf(n / 8.0) * 2.5))
+		u.slot = battle.rotv(t, Vector3(side * (14.0 + float((n / 2) % 4) * 2.2), 0, -(3.0 + floorf(n / 8.0) * 2.5)))
 	if not battle.orders.has(owner):
 		battle.orders[owner] = {}
 		for k in ["sword", "archer", "cav"]:
@@ -1102,7 +1206,7 @@ func on_march(owner: int) -> void:
 
 
 # ---- castle, towers ----
-func damage_castle(t: int, amount: float) -> void:
+func damage_castle(t: int, amount: float, by := -1) -> void:
 	if not is_srv or fallen[t] or not battle.war:
 		return
 	castle_hp[t] = maxf(0.0, castle_hp[t] - amount)
@@ -1110,7 +1214,41 @@ func damage_castle(t: int, amount: float) -> void:
 		fallen[t] = true
 		ev_all("castle_fall", {"team": t})
 		var timer := get_tree().create_timer(6.5)
-		timer.timeout.connect(func(): battle.finish(1 - t, "castle"))
+		timer.timeout.connect(func(): _eliminate(t, by))
+
+
+# A kingdom is out of the game: its units vanish, and the match ends when one is left
+# (or when no human kingdom is left).
+func _eliminate(t: int, by: int) -> void:
+	if battle.over:
+		return
+	for u in battle.units.values().duplicate():
+		if u.team == t and not u.dead:
+			u.hp = 0.0
+			u.die()
+	for k in war_pairs.keys().duplicate():
+		if int(k) / 10 == t or int(k) % 10 == t:
+			war_pairs.erase(k)
+	if alive_count() <= 1:
+		var w := -1
+		for i in nk:
+			if not fallen[i]:
+				w = i
+		battle.finish(w if w >= 0 else maxi(by, 0), "castle")
+		return
+	var humans_alive := false
+	for id in net.players.keys():
+		if not fallen[team_of(id)]:
+			humans_alive = true
+	if not humans_alive:
+		var w2 := 0
+		for i in nk:
+			if not fallen[i]:
+				w2 = i
+				break
+		battle.finish(w2, "castle")
+	elif war_pairs.is_empty():
+		battle.war = false
 
 
 func _tower_tick(dt: float) -> void:
@@ -1120,20 +1258,23 @@ func _tower_tick(dt: float) -> void:
 	if tower_cd > 0.0:
 		return
 	tower_cd = 1.7
-	for t in 2:
+	for t in nk:
 		if fallen[t]:
 			continue
 		for side in [-1.0, 1.0]:
-			var tp := Vector3(side * 36.0, 20.0, -73.0 * dz_of(t))
+			var tp: Vector3 = lw(t, Vector3(side * 36.0, 20.0, -73.0))
 			var best = null
 			var bd := TOWER_RANGE * TOWER_RANGE
-			for e in battle.by_team[1 - t]:
-				if e.dead:
+			for ot in nk:
+				if not battle.hostile(t, ot):
 					continue
-				var d: float = Vector2(e.position.x - tp.x, e.position.z - tp.z).length_squared()
-				if d < bd:
-					bd = d
-					best = e
+				for e in battle.by_team[ot]:
+					if e.dead:
+						continue
+					var d: float = Vector2(e.position.x - tp.x, e.position.z - tp.z).length_squared()
+					if d < bd:
+						bd = d
+						best = e
 			if best != null:
 				battle.fire_arrow_pos(tp, best, t, TOWER_DMG * (0.8 + 0.1 * level[t]))
 
@@ -1143,30 +1284,35 @@ func _tick_duel(dt: float) -> void:
 	if challenge_t > 0.0:
 		challenge_t -= dt
 		if challenge_t <= 0.0:
-			var ka = battle.team_king(0)
-			var kb = battle.team_king(1)
+			var ka = battle.team_king(int(duel_pair[0]))
+			var kb = battle.team_king(int(duel_pair[1]))
 			if ka != null and kb != null and not battle.duel_active:
 				ka.position = Vector3(-5.0, 0.0, 0.0)
 				kb.position = Vector3(5.0, 0.0, 0.0)
 	if not battle.war or duel_done or battle.over:
 		return
 	if not battle.duel_active:
-		var a = battle.team_king(0)
-		var b = battle.team_king(1)
-		if a != null and b != null and a.position.distance_to(b.position) < DUEL_TRIGGER and not inside_any(a.position) and not inside_any(b.position):
-			var c: Vector3 = (a.position + b.position) * 0.5
-			c.y = 0.0
-			battle.duel_center = c
-			battle.duel_r = DUEL_R0
-			battle.duel_active = true
-			battle.freeze_others = true
-			duel_t = 0.0
-			for k in [a, b]:
-				var off: Vector3 = k.position - c
-				off.y = 0.0
-				if off.length() > DUEL_R0 - 1.0:
-					k.position = c + off.normalized() * (DUEL_R0 - 1.0)
-			ev_all("duel_start", {"c": c})
+		for pk in war_pairs.keys():
+			var ta: int = int(pk) / 10
+			var tb: int = int(pk) % 10
+			var a = battle.team_king(ta)
+			var b = battle.team_king(tb)
+			if a != null and b != null and a.position.distance_to(b.position) < DUEL_TRIGGER and not inside_any(a.position) and not inside_any(b.position):
+				var c: Vector3 = (a.position + b.position) * 0.5
+				c.y = 0.0
+				battle.duel_center = c
+				battle.duel_r = DUEL_R0
+				battle.duel_active = true
+				battle.duel_teams = [ta, tb]
+				battle.freeze_others = true
+				duel_t = 0.0
+				for k in [a, b]:
+					var off: Vector3 = k.position - c
+					off.y = 0.0
+					if off.length() > DUEL_R0 - 1.0:
+						k.position = c + off.normalized() * (DUEL_R0 - 1.0)
+				ev_all("duel_start", {"c": c, "a": ta, "b": tb})
+				break
 	else:
 		duel_t += dt
 		battle.duel_r = lerpf(DUEL_R0, DUEL_R1, clampf(duel_t / DUEL_SHRINK, 0.0, 1.0))
@@ -1180,8 +1326,13 @@ func on_king_death(u) -> void:
 		battle.freeze_others = false
 		duel_done = true
 		ev_all("duel_end", {"loser": u.team})
+		var winner_t: int = battle.duel_other(u.team)
+		var loser_t: int = u.team
 		var timer := get_tree().create_timer(3.0)
-		timer.timeout.connect(func(): battle.finish(1 - u.team, "duel"))
+		if nk == 2:
+			timer.timeout.connect(func(): battle.finish(winner_t, "duel"))
+		else:
+			timer.timeout.connect(func(): damage_castle(loser_t, 1e9, winner_t))
 		return
 	respawn[u.team] = {"t": KING_RESPAWN, "owner": u.owner_id}
 	ev_all("king_down", {"team": u.team})
@@ -1193,8 +1344,7 @@ func _tick_respawn(dt: float) -> void:
 		if respawn[t].t <= 0.0:
 			var owner: int = respawn[t].owner
 			respawn.erase(t)
-			var dz := dz_of(t)
-			var h = battle._make_unit("hero", t, owner, home_pos(t) + Vector3(0, 0, -dz * 3.0))
+			var h = battle._make_unit("hero", t, owner, home_pos(t) + battle.rotv(t, Vector3(0, 0, -3.0)))
 			battle.sfx.play("horn", h.position, 0.0, 1.3)
 			break
 
@@ -1229,15 +1379,15 @@ func _duel_visual_start(c: Vector3) -> void:
 	ring.add_child(l)
 	battle.sfx.play_ui("horn", 3.0)
 	battle.banner("DUEL OF KINGS", Color(1.0, 0.7, 0.2), 1.0)
-	var ka = battle.team_king(0)
-	var kb = battle.team_king(1)
+	var ka = battle.team_king(int(battle.duel_teams[0]))
+	var kb = battle.team_king(int(battle.duel_teams[1]))
 	if ka != null and kb != null:
 		var mid: Vector3 = (ka.position + kb.position) * 0.5
 		var axis: Vector3 = (kb.position - ka.position)
 		axis.y = 0.0
 		var side: Vector3 = axis.normalized().cross(Vector3.UP) * 7.0
 		battle.cine_shot(mid + side + Vector3(0, 1.1, 0), mid + side * 0.55 + Vector3(0, 1.9, 0), ka.position + Vector3(0, 1.6, 0), mid + Vector3(0, 1.7, 0), 3.2)
-		battle.banner("%s  VS  %s" % [king_name(0).to_upper(), king_name(1).to_upper()], Color(1.0, 0.85, 0.35), 3.0)
+		battle.banner("%s  VS  %s" % [king_name(int(battle.duel_teams[0])).to_upper(), king_name(int(battle.duel_teams[1])).to_upper()], Color(1.0, 0.85, 0.35), 3.0)
 		var tmr := get_tree().create_timer(3.3)
 		tmr.timeout.connect(func():
 			if battle.duel_active:
@@ -1268,7 +1418,8 @@ func _ai_tick(t: int) -> void:
 		_send_letter(t, txt, owner)
 	if float(decree_cd[t].tax) <= 0.0:
 		_cmd(owner, "tax", {})
-	if float(decree_cd[t].feast) <= 0.0 and battle.war and food[t] > 120:
+	var my_foes: Array = battle.foes_of(t)
+	if float(decree_cd[t].feast) <= 0.0 and not my_foes.is_empty() and food[t] > 120:
 		_cmd(owner, "feast", {})
 	var actions := 0
 	# villagers
@@ -1306,24 +1457,31 @@ func _ai_tick(t: int) -> void:
 	if food[t] < 15 and gold[t] > 90:
 		_cmd(owner, "buyfood", {})
 	# army orders once the war has begun
-	if battle.war:
+	if not my_foes.is_empty():
+		var ft: int = battle.foe(t)
 		var mine_n: int = soldier_n[t]
-		var their_n: int = soldier_n[1 - t]
+		var their_n: int = soldier_n[ft]
 		var mode := 2
-		if mine_n >= 5 and (mine_n >= their_n * 0.7 or fallen[1 - t] or their_n == 0):
+		if mine_n >= 5 and (mine_n >= their_n * 0.7 or fallen[ft] or their_n == 0):
 			mode = 1
-		var dzw := dz_of(t)
 		if not battle.orders.has(owner):
 			battle.orders[owner] = {}
 		for kk in ["sword", "archer", "cav"]:
 			battle.orders[owner][kk] = {"mode": mode, "pos": home_pos(t)}
-	# war decision
-	if not battle.war and battle.game_time > 150.0:
+	# war decision: pick the weakest neighbour we are not fighting yet
+	elif battle.game_time > 150.0 + 12.0 * t:
 		var mine: int = soldier_n[t]
-		var theirs: int = soldier_n[1 - t]
-		if mine >= 10 + lv or (mine >= 7 and mine > theirs * 1.8):
-			_send_letter(t, "I have waited long enough. My armies march - defend your castle!", owner)
-			_cmd(owner, "war", {})
+		var pick := -1
+		var best_n := 1000000
+		for o in nk:
+			if o == t or fallen[o] or at_war(t, o):
+				continue
+			if soldier_n[o] < best_n:
+				best_n = soldier_n[o]
+				pick = o
+		if pick >= 0 and (mine >= 10 + lv or (mine >= 7 and mine > best_n * 1.8)):
+			_send_letter(t, "I have waited long enough. My armies march - defend your castle!", owner, pick)
+			_cmd(owner, "war", {"to": pick})
 
 
 func _ai_read_letter(to_t: int, from_t: int, text: String) -> void:
@@ -1447,10 +1605,28 @@ func _build_ui() -> void:
 		lb.add_theme_constant_override("outline_size", int(5 * u))
 		root.add_child(lb)
 		return pb
-	var mine_col := Color(0.2, 0.45, 1.0) if my_team == 0 else Color(1.0, 0.25, 0.2)
-	var their_col := Color(1.0, 0.25, 0.2) if my_team == 0 else Color(0.2, 0.45, 1.0)
+	var mine_col: Color = battle.team_col(my_team)
 	ui["bar_me"] = mk_bar.call(cx - 262 * u, mine_col, "YOUR CASTLE")
-	ui["bar_foe"] = mk_bar.call(cx + 12 * u, their_col, "ENEMY CASTLE")
+	ui["bar_foe"] = mk_bar.call(cx + 12 * u, battle.team_col(battle.foe(my_team)), "ENEMY CASTLE")
+	ui["bar_foe_lbl"] = ui["bar_foe"]
+	# list of all kingdoms (top right)
+	var kl := VBoxContainer.new()
+	kl.position = Vector2(20 * u, 264 * u)
+	kl.add_theme_constant_override("separation", int(2 * u))
+	kl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(kl)
+	ui["klist"] = kl
+	ui["krows"] = []
+	if nk > 2:
+		for i in nk:
+			var rl2 := Label.new()
+			rl2.add_theme_font_size_override("font_size", int(16 * u))
+			rl2.add_theme_color_override("font_color", battle.team_col(i).lightened(0.25))
+			rl2.add_theme_color_override("font_outline_color", Color.BLACK)
+			rl2.add_theme_constant_override("outline_size", int(5 * u))
+			rl2.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			kl.add_child(rl2)
+			ui["krows"].append(rl2)
 	var st := Label.new()
 	st.position = Vector2(cx - 120 * u, 52 * u)
 	st.size = Vector2(240, 30) * u
@@ -1509,6 +1685,10 @@ func _build_ui() -> void:
 	vb.add_child(g3)
 	mkb.call(g3, "b_letter", func(): _show_compose(""), 318.0)
 	mkb.call(g3, "b_war", func(): _war_press(), 318.0)
+	var g4 := HBoxContainer.new()
+	vb.add_child(g4)
+	var tb: Button = mkb.call(g4, "b_target", func(): cycle_target(), 644.0)
+	tb.visible = nk > 2
 	mapv = MapS.new()
 	mapv.name = "MapView"
 	mapv.kingdom = self
@@ -1522,6 +1702,7 @@ func _build_ui() -> void:
 	court.mapv = mapv
 	add_child(court)
 	court.build_ui(root, u, vs)
+	_build_admin(root, u)
 
 
 func _toggle_panel() -> void:
@@ -1531,12 +1712,39 @@ func _toggle_panel() -> void:
 	battle.sfx.play_ui("coin", -10.0)
 
 
+var sel_target := -1
+
+
+# The kingdom whose point of view the screen shows (admin mode can look through another kingdom).
+func vteam() -> int:
+	if battle.admin and battle.admin_view >= 0 and battle.admin_view < nk:
+		return battle.admin_view
+	return my_team
+
+
+func target_team() -> int:
+	var vt := vteam()
+	if sel_target >= 0 and sel_target < nk and sel_target != vt and not fallen[sel_target]:
+		return sel_target
+	return battle.foe(vt)
+
+
+func cycle_target() -> void:
+	var cur := target_team()
+	for i in nk:
+		var c := (cur + 1 + i) % nk
+		if c != vteam() and not fallen[c]:
+			sel_target = c
+			break
+	_update_ui(true)
+
+
 func _war_press() -> void:
-	if battle.war:
+	if at_war(vteam(), target_team()):
 		return
 	if war_confirm > 0.0:
 		war_confirm = 0.0
-		cmd("war")
+		cmd("war", {"to": target_team()})
 		_toggle_panel()
 	else:
 		war_confirm = 3.0
@@ -1568,7 +1776,7 @@ func _process(dt: float) -> void:
 func _update_ui(force: bool) -> void:
 	if ui.is_empty():
 		return
-	var t := my_team
+	var t := vteam()
 	var houses := count_slots(t, 1)
 	var res: Label = ui.res
 	res.text = LocS.t("GOLD %d    FOOD %d    POP %d/%d    VILLAGERS %d    LV %d" % [int(gold[t]), int(food[t]), pop_used[t], pop_cap(t), vill_n[t], level[t]])
@@ -1576,13 +1784,30 @@ func _update_ui(force: bool) -> void:
 	var bf: ProgressBar = ui.bar_foe
 	bm.max_value = CASTLE_HP[level[t] - 1]
 	bm.value = castle_hp[t]
-	bf.max_value = CASTLE_HP[level[1 - t] - 1]
-	bf.value = castle_hp[1 - t]
+	var tt: int = target_team()
+	bf.max_value = CASTLE_HP[level[tt] - 1]
+	bf.value = castle_hp[tt]
+	var ffill := StyleBoxFlat.new()
+	ffill.bg_color = battle.team_col(tt)
+	bf.add_theme_stylebox_override("fill", ffill)
+	if nk > 2:
+		var rows: Array = ui.krows
+		for i in nk:
+			var tag := ""
+			if fallen[i]:
+				tag = "  X"
+			elif at_war(vteam(), i):
+				tag = "  WAR"
+			elif i == tt:
+				tag = "  <"
+			var nm: String = battle.team_name(i) + (" (you)" if i == my_team else "")
+			var rl3: Label = rows[i]
+			rl3.text = LocS.t(nm) + LocS.t(tag) + "  %d" % int(castle_hp[i])
 	var st: Label = ui.status
 	if battle.duel_active:
 		st.text = LocS.t("DUEL OF KINGS")
 		st.add_theme_color_override("font_color", Color(1.0, 0.7, 0.2))
-	elif battle.war:
+	elif at_war(t, tt) or (nk == 2 and battle.war):
 		st.text = LocS.t("WAR")
 		st.add_theme_color_override("font_color", Color(1.0, 0.3, 0.25))
 	else:
@@ -1615,11 +1840,13 @@ func _update_ui(force: bool) -> void:
 		set_b.call(pair[0], txt, barr_ok and level[t] >= inf[3] and gold[t] >= inf[0] and food[t] >= inf[1])
 	set_b.call("b_letter", "Write Letter\nsend a messenger", true)
 	var wb: Button = ui.b_war
-	if battle.war:
+	var tbn: Button = ui.b_target
+	tbn.text = LocS.t("Target: ") + LocS.t(battle.team_name(tt)) + "  " + LocS.t("(tap to change)")
+	if at_war(t, tt):
 		wb.text = LocS.t("WAR IS ON")
 		wb.disabled = true
 	else:
-		wb.disabled = false
+		wb.disabled = fallen[tt]
 		wb.text = LocS.t("TAP AGAIN TO CONFIRM" if war_confirm > 0.0 else "Declare War\nattack the other king")
 
 
@@ -1686,7 +1913,7 @@ func _show_compose(prefill: String) -> void:
 		if txt.is_empty():
 			battle._toast("The paper is empty!", 1.5)
 			return
-		cmd("letter", {"text": txt.substr(0, 240)})
+		cmd("letter", {"text": txt.substr(0, 240), "to": target_team()})
 		_close_modal(dim))
 	row.add_child(send)
 	var cancel := Button.new()
@@ -1730,3 +1957,88 @@ func _show_reader(from_name: String, text: String) -> void:
 	close.custom_minimum_size = Vector2(200, 62) * u
 	close.pressed.connect(func(): _close_modal(dim))
 	row.add_child(close)
+
+
+# ================================================================== admin mode (secret code typed to the advisor)
+func set_admin(on: bool) -> void:
+	battle.admin = on
+	battle.reveal = on
+	if not on:
+		battle.admin_view = -1
+		battle.admin_ctrl = false
+		Engine.time_scale = 1.0
+	if ui.has("b_admin"):
+		ui.b_admin.visible = on
+	if not on and ui.has("apanel"):
+		ui.apanel.visible = false
+	_update_ui(true)
+
+
+func vs_x_half(_u: float) -> float:
+	return battle.vs.x * 0.5
+
+
+func _build_admin(root: Control, u: float) -> void:
+	var b := Button.new()
+	b.text = "ADMIN"
+	b.position = Vector2(660, 122) * u
+	b.size = Vector2(150, 58) * u
+	b.visible = false
+	b.pressed.connect(func(): ui.apanel.visible = not ui.apanel.visible; _admin_refresh())
+	root.add_child(b)
+	ui["b_admin"] = b
+	var p := PanelContainer.new()
+	p.position = Vector2(vs_x_half(u) - 215 * u, 190 * u)
+	p.visible = false
+	root.add_child(p)
+	ui["apanel"] = p
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", int(6 * u))
+	p.add_child(vb)
+	_label(vb, "ADMIN MODE", int(24 * u), Color(1.0, 0.6, 0.3))
+	var mk := func(key: String, cb: Callable) -> void:
+		var bt := Button.new()
+		bt.custom_minimum_size = Vector2(430, 54) * u
+		bt.pressed.connect(cb)
+		vb.add_child(bt)
+		ui[key] = bt
+	mk.call("a_view", func():
+		var cur := vteam()
+		var nxt := (cur + 1) % nk
+		battle.admin_view = nxt if nxt != my_team else -1
+		if battle.admin_view < 0:
+			battle.admin_ctrl = false
+		battle.cam_yaw = ang(vteam())
+		sel_target = -1
+		_admin_refresh()
+		_update_ui(true))
+	mk.call("a_ctrl", func():
+		battle.admin_ctrl = not battle.admin_ctrl
+		_admin_refresh())
+	mk.call("a_fog", func():
+		battle.reveal = not battle.reveal
+		_admin_refresh())
+	mk.call("a_speed", func():
+		var sp := Engine.time_scale
+		Engine.time_scale = 2.0 if sp < 1.5 else (4.0 if sp < 3.0 else 1.0)
+		_admin_refresh())
+	mk.call("a_gold", func():
+		if is_srv:
+			var vt := vteam()
+			gold[vt] += 500.0
+			food[vt] += 300.0
+		_admin_refresh())
+
+
+func _admin_refresh() -> void:
+	if not ui.has("a_view"):
+		return
+	var vt := vteam()
+	ui.a_view.text = LocS.t("View: ") + LocS.t(battle.team_name(vt)) + (" (you)" if vt == my_team else "") + "  " + LocS.t("(tap to switch)")
+	var can_ctrl: bool = vt != my_team and not net.online
+	ui.a_ctrl.disabled = not can_ctrl
+	ui.a_ctrl.text = LocS.t("Control this kingdom: ") + (LocS.t("ON") if battle.admin_ctrl and can_ctrl else LocS.t("OFF"))
+	ui.a_fog.text = LocS.t("See everything: ") + (LocS.t("ON") if battle.reveal else LocS.t("OFF"))
+	ui.a_speed.text = LocS.t("Game speed: x%d") % int(Engine.time_scale)
+	ui.a_gold.text = LocS.t("+500 gold, +300 food")
+	ui.a_gold.disabled = not is_srv
