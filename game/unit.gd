@@ -158,7 +158,7 @@ func setup(k: String, t: int, o: int, b) -> void:
 func _build() -> void:
 	var hero := kind == "hero"
 	sc = 1.22 if hero else 1.0
-	var tc := Color(0.12, 0.32, 0.95) if team == 0 else Color(0.9, 0.12, 0.1)
+	var tc: Color = battle.team_col(team)
 	var cloth := _mat(tc, 0.0, 0.8)
 	var glow := _mat(tc, 0.0, 0.6, 0.6)
 	var steel := _mat(Color(0.72, 0.74, 0.8), 0.9, 0.3)
@@ -334,7 +334,7 @@ func _build_horse() -> void:
 	var white := kind == "hero"
 	var hm := _mat(Color(0.92, 0.92, 0.9) if white else Color(0.32, 0.18, 0.1), 0.0, 0.8)
 	var dark := _mat(Color(0.1, 0.07, 0.05), 0.0, 0.9)
-	var tc := Color(0.12, 0.32, 0.95) if team == 0 else Color(0.9, 0.12, 0.1)
+	var tc: Color = battle.team_col(team)
 	_add(horse, _box(Vector3(0.6, 0.65, 1.6)), hm, Vector3(0, 1.0, 0), Vector3.ZERO, true)
 	_add(horse, _box(Vector3(0.66, 0.67, 0.9)), _mat(tc, 0.0, 0.8), Vector3(0, 1.02, -0.05))
 	_add(horse, _box(Vector3(0.28, 0.7, 0.3)), hm, Vector3(0, 1.45, 0.8), Vector3(-0.5, 0, 0))
@@ -469,12 +469,15 @@ func _physics_process(dt: float) -> void:
 	if kind == "villager":
 		_villager()
 		return
-	if kind == "hero" and owner_id >= 0:
+	if kind == "hero" and (owner_id >= 0 or driven):
 		_hero()
 	else:
 		_ai()
 	if kind == "hero" and battle.duel_active:
 		_duel_clamp()
+
+
+var driven := false
 
 
 func _duel_clamp() -> void:
@@ -567,9 +570,17 @@ func _move(dir: Vector3, s: float) -> void:
 	dir = dir.normalized()
 	var push: Vector3 = battle.separation(self)
 	var np := position + (dir * s + push * 2.0) * _dt
-	var zmax := 78.0 if battle.kingdom == null else 124.0
-	np.x = clampf(np.x, -95.0, 95.0)
-	np.z = clampf(np.z, -zmax, zmax)
+	if battle.nk > 2:
+		var lim: float = battle.ring_r + 50.0
+		var flat := Vector2(np.x, np.z)
+		if flat.length() > lim:
+			flat = flat.normalized() * lim
+			np.x = flat.x
+			np.z = flat.y
+	else:
+		var zmax := 78.0 if battle.kingdom == null else 124.0
+		np.x = clampf(np.x, -95.0, 95.0)
+		np.z = clampf(np.z, -zmax, zmax)
 	sim_speed = lerpf(sim_speed, s, clampf(_dt * 6.0, 0.0, 1.0))
 	var oldp := position
 	position = np
@@ -594,7 +605,7 @@ func _goto(p: Vector3, mult := 1.0) -> void:
 	d.y = 0.0
 	if d.length() < 1.2:
 		_stop()
-		_face(Vector3(0, 0, 1.0 if team == 0 else -1.0))
+		_face(battle.rotv(team, Vector3(0, 0, 1)))
 	else:
 		var wp := _via(p)
 		var dw := wp - position
@@ -635,7 +646,8 @@ func _ai() -> void:
 	if target != null and (not is_instance_valid(target) or target.dead):
 		target = null
 	if battle.duel_active and kind == "hero":
-		var kg = battle.team_king(1 - team)
+		var ot: int = battle.duel_other(team)
+		var kg = battle.team_king(ot) if ot >= 0 else null
 		if kg != null:
 			target = kg
 			_engage(M_CHARGE)
@@ -645,11 +657,11 @@ func _ai() -> void:
 	if battle.kingdom != null and kind != "hero" and battle.is_garrison(self):
 		ord = {"mode": M_HOLD, "pos": battle.kingdom.home_pos(team)}
 	if battle.kingdom != null and battle.war and target != null and kind != "archer" and kind != "hero" \
-			and battle.kingdom.inside(1 - team, target.position) and battle.kingdom.castle_alive(1 - team):
+			and battle.kingdom.inside(target.team, target.position) and battle.kingdom.castle_alive(target.team):
 		target = null
 	var mode: int = ord.mode
 	if battle.kingdom != null and battle.war and target == null and kind != "hero" \
-			and (mode == M_ADVANCE or mode == M_CHARGE) and battle.kingdom.castle_alive(1 - team):
+			and (mode == M_ADVANCE or mode == M_CHARGE) and battle.kingdom.target_castle(self) >= 0:
 		if _siege():
 			return
 	var anchor: Vector3 = battle.anchor_for(self, ord)
@@ -678,12 +690,14 @@ func _ai() -> void:
 
 # Attack the enemy castle wall. Returns true while busy with it.
 func _siege() -> bool:
-	var sgn := 1.0 if team == 0 else -1.0
-	var wall_z := 71.5 * sgn
+	var ft: int = battle.kingdom.target_castle(self)
+	if ft < 0:
+		return false
+	var l: Vector3 = battle.wl(ft, position)
 	var reach := 18.0 if kind == "archer" else 3.2
-	if absf(position.z - wall_z) <= reach and absf(position.x) < 35.0:
+	if absf(l.z + 71.5) <= reach and absf(l.x) < 35.0 and l.z < -60.0:
 		_stop()
-		_face(Vector3(0, 0, sgn))
+		_face(battle.rotv(ft, Vector3(0, 0, -1)))
 		if atk_cd <= 0.0:
 			var s: Dictionary = KINDS[kind]
 			atk_cd = s.cd
@@ -692,8 +706,8 @@ func _siege() -> bool:
 			var d: float = s.dmg * (1.35 if buff_t > 0.0 else 1.0)
 			battle.castle_hit(self, d)
 		return true
-	var stand := wall_z - sgn * (reach - 1.0 if kind == "archer" else 1.4)
-	_goto(Vector3(clampf(position.x, -30.0, 30.0), 0, stand), 1.0)
+	var off: float = (reach - 1.0) if kind == "archer" else 1.4
+	_goto(battle.lw(ft, Vector3(clampf(l.x, -30.0, 30.0), 0, -71.5 + off)), 1.0)
 	return true
 
 
