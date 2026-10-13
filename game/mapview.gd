@@ -28,7 +28,7 @@ const VIS_TOWER := 46.0
 # ================================================================== fog of war
 func vision_sources() -> Array:
 	var out := []
-	var t: int = kingdom.my_team
+	var t: int = kingdom.vteam()
 	for u in battle.units.values():
 		if u.team != t or u.dead:
 			continue
@@ -39,10 +39,9 @@ func vision_sources() -> Array:
 			r = VIS_VILLAGER
 		out.append([u.position, r])
 	if not kingdom.fallen[t]:
-		var dz: float = kingdom.dz_of(t)
 		for sx in [-36.0, 0.0, 36.0]:
-			out.append([Vector3(sx, 0, -dz * 73.0), VIS_TOWER])
-		out.append([Vector3(0, 0, -dz * 100.0), 40.0])
+			out.append([kingdom.lw(t, Vector3(sx, 0, -73.0)), VIS_TOWER])
+		out.append([kingdom.lw(t, Vector3(0, 0, -100.0)), 40.0])
 	return out
 
 
@@ -59,9 +58,9 @@ func can_see(p: Vector3, srcs: Array) -> bool:
 
 func update_fog() -> void:
 	var srcs := vision_sources()
-	var t: int = kingdom.my_team
+	var t: int = kingdom.vteam()
 	for u in battle.units.values():
-		if u.team == t:
+		if u.team == t or battle.reveal:
 			if not u.visible:
 				u.visible = true
 			continue
@@ -71,7 +70,7 @@ func update_fog() -> void:
 		if u.visible != vis:
 			u.visible = vis
 		if vis and not u.dead:
-			last_seen[u.uid] = {"pos": u.position, "t": battle.game_time, "kind": u.kind}
+			last_seen[u.uid] = {"pos": u.position, "t": battle.game_time, "kind": u.kind, "team": u.team}
 	# forget old sightings
 	for k in last_seen.keys():
 		if battle.game_time - float(last_seen[k].t) > 25.0:
@@ -109,26 +108,28 @@ func _process(dt: float) -> void:
 
 
 # ================================================================== map coordinates
+func extents() -> Vector2:
+	if battle.nk > 2:
+		var e: float = battle.ring_r + 55.0
+		return Vector2(e, e)
+	return Vector2(100.0, 140.0)
+
+
 func w2m(p: Vector3) -> Vector2:
 	var sz := map.size
-	var x := (p.x + 100.0) / 200.0 * sz.x
-	var y := (p.z + 140.0) / 280.0 * sz.y
-	if kingdom.my_team == 0:
-		y = sz.y - y
-	else:
-		x = sz.x - x
-	return Vector2(x, y)
+	var ex := extents()
+	var a: Vector3 = Basis(Vector3.UP, -kingdom.ang(kingdom.vteam())) * p
+	var x := (a.x + ex.x) / (2.0 * ex.x) * sz.x
+	var y := (a.z + ex.y) / (2.0 * ex.y) * sz.y
+	return Vector2(x, sz.y - y)
 
 
 func m2w(q: Vector2) -> Vector3:
 	var sz := map.size
-	var x := q.x
-	var y := q.y
-	if kingdom.my_team == 0:
-		y = sz.y - y
-	else:
-		x = sz.x - x
-	return Vector3(x / sz.x * 200.0 - 100.0, 0.0, y / sz.y * 280.0 - 140.0)
+	var ex := extents()
+	var ax := q.x / sz.x * 2.0 * ex.x - ex.x
+	var az := (sz.y - q.y) / sz.y * 2.0 * ex.y - ex.y
+	return Basis(Vector3.UP, kingdom.ang(kingdom.vteam())) * Vector3(ax, 0.0, az)
 
 
 # ================================================================== UI
@@ -137,10 +138,12 @@ func build_ui(root: Control, u: float, vs: Vector2) -> void:
 	dim.color = Color(0, 0, 0, 0.7)
 	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
 	dim.mouse_filter = Control.MOUSE_FILTER_STOP
+	dim.z_index = 40
 	dim.visible = false
 	root.add_child(dim)
 	var hh := vs.y * 0.86
-	var ww := hh * 200.0 / 280.0
+	var ex0 := extents()
+	var ww := hh * ex0.x / ex0.y
 	var holder := HBoxContainer.new()
 	holder.add_theme_constant_override("separation", int(14 * u))
 	holder.position = Vector2(vs.x * 0.5 - (ww + 380 * u) * 0.5, vs.y * 0.07)
@@ -190,6 +193,19 @@ func build_ui(root: Control, u: float, vs: Vector2) -> void:
 				b.set_pressed_no_signal(true))
 		row.add_child(b)
 		chips.append(b)
+	var prow := GridContainer.new()
+	prow.columns = 2
+	prow.add_theme_constant_override("h_separation", int(6 * u))
+	prow.add_theme_constant_override("v_separation", int(6 * u))
+	col.add_child(prow)
+	var presets := [["AT THE GATE", -62.0], ["IN FRONT", -40.0], ["MIDFIELD", -8.0], ["ON THE WALLS", -80.0]]
+	for pr in presets:
+		var pb := Button.new()
+		pb.text = pr[0]
+		pb.custom_minimum_size = Vector2(182, 52) * u
+		var lz: float = pr[1]
+		pb.pressed.connect(func(): _station_preset(lz))
+		prow.add_child(pb)
 	btn_station = Button.new()
 	btn_station.text = "STATION: tap the map"
 	btn_station.toggle_mode = true
@@ -208,7 +224,7 @@ func build_ui(root: Control, u: float, vs: Vector2) -> void:
 	home.text = "RETURN to the castle"
 	home.custom_minimum_size = Vector2(370, 62) * u
 	home.pressed.connect(func():
-		battle.order_at(4, sel_mask, kingdom.home_pos(kingdom.my_team), -1)
+		battle.order_at(4, sel_mask, kingdom.home_pos(kingdom.vteam()), -1)
 		flags.clear()
 		info.text = "Orders given: return home.")
 	col.add_child(home)
@@ -241,6 +257,18 @@ func build_ui(root: Control, u: float, vs: Vector2) -> void:
 	col.add_child(cl)
 	_dot = 4.0 * u
 	set_garrison(0, false)
+
+
+# Quick station: put the selected groups at a spot on my kingdom's axis (local z measured from the castle centre line).
+func _station_preset(lz: float) -> void:
+	var vt: int = kingdom.vteam()
+	var w: Vector3 = kingdom.lw(vt, Vector3(0, 0, lz))
+	battle.order_at(2, sel_mask, w, -1)
+	var ks := ["sword", "archer", "cav"]
+	for i in 3:
+		if (sel_mask & (1 << i)) != 0:
+			flags[ks[i]] = w
+	info.text = "Groups are moving to that spot and will hold it."
 
 
 func set_garrison(pc: int, send := true) -> void:
@@ -306,34 +334,36 @@ func _map_input(e: InputEvent) -> void:
 
 func _draw_map() -> void:
 	var sz := map.size
-	var t: int = kingdom.my_team
+	var t: int = kingdom.vteam()
 	map.draw_rect(Rect2(Vector2.ZERO, sz), Color(0.06, 0.07, 0.09))
-	var k := sz.x / 200.0
+	var k := sz.x / (2.0 * extents().x)
 	for s in vision_sources():
 		map.draw_circle(w2m(s[0]), float(s[1]) * k, Color(0.22, 0.34, 0.18))
 	map.draw_rect(Rect2(Vector2.ZERO, sz), Color(0.8, 0.65, 0.3), false, 3.0)
-	# the two castles (always known)
-	for tt in 2:
-		var dz: float = kingdom.dz_of(tt)
-		var a := w2m(Vector3(-36, 0, -dz * 73.0))
-		var b := w2m(Vector3(36, 0, -dz * 121.0))
-		var r := Rect2(Vector2(minf(a.x, b.x), minf(a.y, b.y)), Vector2(absf(b.x - a.x), absf(b.y - a.y)))
-		var mine := tt == t
-		var base := Color(0.2, 0.45, 1.0) if tt == 0 else Color(1.0, 0.3, 0.25)
-		map.draw_rect(r, Color(base.r, base.g, base.b, 0.22 if mine else 0.1))
-		map.draw_rect(r, Color(base.r, base.g, base.b, 0.9 if mine else 0.5), false, 2.5)
-		var g := w2m(Vector3(0, 0, -dz * 73.0))
-		map.draw_rect(Rect2(g - Vector2(8, 3), Vector2(16, 6)), Color(1.0, 0.85, 0.4))
+	# all castles (always known)
+	for tt in kingdom.nk:
+		var corners := [kingdom.lw(tt, Vector3(-36, 0, -73.0)), kingdom.lw(tt, Vector3(36, 0, -73.0)), kingdom.lw(tt, Vector3(36, 0, -121.0)), kingdom.lw(tt, Vector3(-36, 0, -121.0))]
+		var poly := PackedVector2Array()
+		for cpt in corners:
+			poly.append(w2m(cpt))
+		var mine: bool = tt == t
+		var base: Color = battle.team_col(tt)
+		map.draw_colored_polygon(poly, Color(base.r, base.g, base.b, 0.22 if mine else 0.1))
+		var outl := poly.duplicate()
+		outl.append(poly[0])
+		map.draw_polyline(outl, Color(base.r, base.g, base.b, 0.9 if mine else 0.5), 2.5)
+		var g := w2m(kingdom.lw(tt, Vector3(0, 0, -73.0)))
+		map.draw_circle(g, 6.0, Color(1.0, 0.85, 0.4))
 		if kingdom.fallen[tt]:
-			map.draw_line(r.position, r.end, Color(1, 0.4, 0.1), 3.0)
-			map.draw_line(Vector2(r.position.x, r.end.y), Vector2(r.end.x, r.position.y), Color(1, 0.4, 0.1), 3.0)
+			map.draw_line(poly[0], poly[2], Color(1, 0.4, 0.1), 3.0)
+			map.draw_line(poly[1], poly[3], Color(1, 0.4, 0.1), 3.0)
 	# units
 	for u in battle.units.values():
 		if u.dead:
 			continue
-		if u.team != t and not u.visible:
+		if u.team != t and not u.visible and not battle.reveal:
 			continue
-		var c: Color = Color(0.45, 0.7, 1.0) if u.team == 0 else Color(1.0, 0.45, 0.4)
+		var c: Color = battle.team_col(u.team).lightened(0.3)
 		var p := w2m(u.position)
 		if u.kind == "hero":
 			map.draw_circle(p, _dot * 1.9, Color(1.0, 0.85, 0.3))
