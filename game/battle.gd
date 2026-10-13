@@ -5,6 +5,7 @@ const UnitS := preload("res://game/unit.gd")
 const ArrowS := preload("res://game/arrow.gd")
 const SfxS := preload("res://game/sfx.gd")
 const KingdomS := preload("res://game/kingdom.gd")
+const BattleMapS := preload("res://game/battlemap.gd")
 
 # Horse riding for the player is switched off until the horse models/animations are ready.
 const HORSE_RIDING := false
@@ -24,6 +25,10 @@ var net
 var sfx
 var units := {}
 var by_team := [[], []]
+var nk := 2
+var ring_r := 73.0
+const TEAM_COLS := [Color(0.12, 0.32, 0.95), Color(0.9, 0.12, 0.1), Color(0.14, 0.68, 0.24), Color(0.95, 0.76, 0.1), Color(0.62, 0.22, 0.85), Color(0.96, 0.5, 0.08)]
+const TEAM_NAMES := ["Blue", "Red", "Green", "Yellow", "Purple", "Orange"]
 var heroes := {}
 var orders := {}
 var hunt := {}
@@ -63,9 +68,14 @@ var vs := Vector2(1280, 720)
 var game_time := 0.0
 var kingdom = null
 var castle_roots := [null, null]
+var admin := false
+var admin_view := -1
+var admin_ctrl := false
+var reveal := false
 var war := false
 var war_t0 := 0.0
 var duel_active := false
+var duel_teams := [-1, -1]
 var duel_r := 9.5
 var duel_center := Vector3.ZERO
 var freeze_others := false
@@ -80,13 +90,21 @@ func _ready() -> void:
 	is_srv = multiplayer.is_server()
 	my_id = multiplayer.get_unique_id()
 	var me: Dictionary = net.players.get(my_id, {"idx": 0})
-	my_team = int(me.idx) % 2
+	if String(cfg.get("mode", "battle")) == "kingdom":
+		nk = clampi(int(cfg.get("kingdoms", 2)), 2, 6)
+	ring_r = 73.0 if nk <= 4 else (78.0 if nk == 5 else 92.0)
+	by_team = []
+	castle_roots = []
+	for i in nk:
+		by_team.append([])
+		castle_roots.append(null)
+	my_team = int(me.idx) % nk
 	_build_world()
 	sfx = SfxS.new()
 	sfx.name = "Sfx"
 	add_child(sfx)
 	_build_hud()
-	cam_yaw = 0.0 if my_team == 0 else PI
+	cam_yaw = ang(my_team)
 	if String(cfg.get("mode", "battle")) == "kingdom":
 		kingdom = KingdomS.new()
 		kingdom.name = "Kingdom"
@@ -96,6 +114,86 @@ func _ready() -> void:
 	if is_srv:
 		_spawn_all()
 	_intro()
+
+
+
+# ================================================================== ring geometry
+# Each kingdom has a local frame (its castle gate at local z=-73, interior behind it).
+# Kingdom t is that frame rotated by ang(t) around the map centre; with 2 kingdoms the
+# gates are at z=-73 and z=+73 as before, with 6 they sit on a ring.
+func ang(t: int) -> float:
+	return TAU * float(t) / float(nk)
+
+
+func lw(t: int, v: Vector3) -> Vector3:
+	return Basis(Vector3.UP, ang(t)) * (v + Vector3(0, 0, 73.0 - ring_r))
+
+
+func wl(t: int, p: Vector3) -> Vector3:
+	return Basis(Vector3.UP, -ang(t)) * p - Vector3(0, 0, 73.0 - ring_r)
+
+
+func rotv(t: int, v: Vector3) -> Vector3:
+	return Basis(Vector3.UP, ang(t)) * v
+
+
+func team_col(t: int) -> Color:
+	return TEAM_COLS[t % 6]
+
+
+func team_name(t: int) -> String:
+	return TEAM_NAMES[t % 6]
+
+
+# Who the local player's orders are given for (admin mode can take over an AI kingdom, offline only).
+func ctrl_owner() -> int:
+	if admin and admin_ctrl and admin_view >= 0 and admin_view != my_team and not net.online:
+		return -100 - admin_view
+	return my_id
+
+
+func hostile(a: int, b: int) -> bool:
+	if a == b:
+		return false
+	if kingdom == null:
+		return true
+	return kingdom.at_war(a, b)
+
+
+# Teams this team is fighting right now.
+func foes_of(t: int) -> Array:
+	var r := []
+	for i in nk:
+		if i != t and hostile(t, i):
+			r.append(i)
+	return r
+
+
+# The kingdom this team marches against: the nearest alive hostile one (or, in peace, the nearest alive neighbour).
+func foe(t: int) -> int:
+	if nk == 2:
+		return 1 - t
+	var best := -1
+	var bd := 1e18
+	var hos := foes_of(t)
+	for i in nk:
+		if i == t or (kingdom != null and kingdom.fallen[i]):
+			continue
+		if not hos.is_empty() and not hos.has(i):
+			continue
+		var d: float = lw(t, Vector3(0, 0, -73.0)).distance_squared_to(lw(i, Vector3(0, 0, -73.0)))
+		if d < bd:
+			bd = d
+			best = i
+	return best if best >= 0 else (t + 1) % nk
+
+
+func hostile_units(t: int) -> Array:
+	var r := []
+	for i in nk:
+		if hostile(t, i):
+			r.append_array(by_team[i])
+	return r
 
 
 # ================================================================== world
@@ -144,34 +242,35 @@ func _build_world() -> void:
 	var env := Environment.new()
 	var sky := Sky.new()
 	var sm := ProceduralSkyMaterial.new()
-	sm.sky_top_color = Color(0.2, 0.3, 0.58)
-	sm.sky_horizon_color = Color(0.98, 0.66, 0.42)
-	sm.ground_horizon_color = Color(0.75, 0.55, 0.42)
-	sm.ground_bottom_color = Color(0.25, 0.2, 0.18)
+	sm.sky_top_color = Color(0.22, 0.42, 0.78)
+	sm.sky_horizon_color = Color(0.72, 0.8, 0.9)
+	sm.ground_horizon_color = Color(0.5, 0.58, 0.5)
+	sm.ground_bottom_color = Color(0.2, 0.26, 0.2)
 	sm.sun_angle_max = 25.0
 	sm.sun_curve = 0.12
 	sky.sky_material = sm
 	env.background_mode = Environment.BG_SKY
 	env.sky = sky
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
-	env.ambient_light_energy = 0.7
+	env.ambient_light_energy = 0.5
 	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
 	env.glow_enabled = true
-	env.glow_intensity = 0.55
-	env.glow_bloom = 0.04
+	env.glow_intensity = 0.3
+	env.glow_bloom = 0.0
+	env.glow_hdr_threshold = 1.3
 	env.fog_enabled = true
-	env.fog_light_color = Color(0.9, 0.72, 0.6)
-	env.fog_density = 0.0028
+	env.fog_light_color = Color(0.66, 0.74, 0.84)
+	env.fog_density = 0.0011
 	env.adjustment_enabled = true
-	env.adjustment_saturation = 1.15
-	env.adjustment_contrast = 1.08
+	env.adjustment_saturation = 1.1
+	env.adjustment_contrast = 1.12
 	we.environment = env
 	add_child(we)
 
 	var sun := DirectionalLight3D.new()
 	sun.rotation_degrees = Vector3(-32, -40, 0)
-	sun.light_color = Color(1.0, 0.86, 0.68)
-	sun.light_energy = 1.2
+	sun.light_color = Color(1.0, 0.94, 0.82)
+	sun.light_energy = 1.0
 	sun.shadow_enabled = true
 	sun.directional_shadow_max_distance = 75.0
 	add_child(sun)
@@ -202,7 +301,10 @@ func _build_world() -> void:
 	while placed < 110:
 		var x := rng.randf_range(-190, 190)
 		var z := rng.randf_range(-190, 190)
-		if absf(x) < 108 and absf(z) < (140 if String(cfg.get("mode", "battle")) == "kingdom" else 96):
+		if nk > 2:
+			if Vector2(x, z).length() < ring_r + 78.0:
+				continue
+		elif absf(x) < 108 and absf(z) < (140 if String(cfg.get("mode", "battle")) == "kingdom" else 96):
 			continue
 		var t := Node3D.new()
 		t.position = Vector3(x, 0, z)
@@ -220,16 +322,17 @@ func _build_world() -> void:
 		var r := 300.0
 		_mesh(self, _cyl(0.0, rng.randf_range(50, 90), rng.randf_range(60, 110), 8), rock, Vector3(cos(a) * r, 30, sin(a) * r), Vector3.ZERO, false)
 	# castles
-	_castle(0, -73.0)
-	_castle(1, 73.0)
+	for i in nk:
+		_castle(i)
 
 
-func _castle(team: int, z: float) -> void:
+func _castle(team: int) -> void:
 	var stone := _mat(Color(0.55, 0.53, 0.5), 0.95)
-	var tc := Color(0.12, 0.32, 0.95) if team == 0 else Color(0.9, 0.12, 0.1)
+	var tc := team_col(team)
 	var cloth := _mat(tc, 0.8, 0.0, 0.5)
 	var root := Node3D.new()
-	root.position = Vector3(0, 0, z)
+	root.position = lw(team, Vector3(0, 0, -73.0))
+	root.rotation.y = ang(team)
 	add_child(root)
 	castle_roots[team] = root
 	var kmode := String(cfg.get("mode", "battle")) == "kingdom"
@@ -245,13 +348,13 @@ func _castle(team: int, z: float) -> void:
 			continue
 		_mesh(root, _box(Vector3(2.2, 1.6, 3.3)), stone, Vector3(-34 + i * 4.0, 9.8, 0), Vector3.ZERO, false)
 	if not kmode:
-		_mesh(root, _box(Vector3(10, 7, 3.4)), _mat(Color(0.18, 0.12, 0.08)), Vector3(0, 3.5, 0.1 * (1.0 if team == 0 else -1.0)))
+		_mesh(root, _box(Vector3(10, 7, 3.4)), _mat(Color(0.18, 0.12, 0.08)), Vector3(0, 3.5, 0.1))
 	for sx in [-36.0, 36.0]:
 		_mesh(root, _cyl(4.4, 4.6, 16, 14), stone, Vector3(sx, 8, 0))
 		_mesh(root, _cyl(0.0, 6.0, 6.5, 14), cloth, Vector3(sx, 19, 0))
 		_mesh(root, _box(Vector3(0.2, 5, 0.2)), stone, Vector3(sx, 24, 0), Vector3.ZERO, false)
 		_mesh(root, _box(Vector3(3.2, 2.0, 0.1)), cloth, Vector3(sx + 1.7, 25, 0), Vector3.ZERO, false)
-	var fz := 3.0 if team == 0 else -3.0
+	var fz := 3.0
 	for sx in [-6.0, 6.0]:
 		_mesh(root, _cyl(0.2, 0.25, 3.0, 8), stone, Vector3(sx, 1.5, fz), Vector3.ZERO, false)
 		_mesh(root, _cyl(0.0, 0.45, 0.8, 8), _mat(Color(1.0, 0.5, 0.15), 0.5, 0.0, 4.0), Vector3(sx, 3.3, fz), Vector3.ZERO, false)
@@ -265,10 +368,12 @@ func _castle(team: int, z: float) -> void:
 
 # ================================================================== armies
 func _spawn_all() -> void:
-	var tp := [[], []]
+	var tp := []
+	for i in nk:
+		tp.append([])
 	for id in net.players.keys():
-		tp[int(net.players[id].idx) % 2].append(id)
-	for t in 2:
+		tp[int(net.players[id].idx) % nk].append(id)
+	for t in nk:
 		var lst: Array = tp[t]
 		if lst.is_empty():
 			ai_teams.append(t)
@@ -284,11 +389,11 @@ func _spawn_army(owner: int, team: int, cx: float) -> void:
 	if kingdom != null:
 		orders[owner] = {}
 		var hp: Vector3 = kingdom.home_pos(team)
-		var king = _make_unit("hero", team, owner, hp + Vector3(cx, 0, -dz * 4.0))
+		var king = _make_unit("hero", team, owner, hp + rotv(team, Vector3(cx, 0, -4.0)))
 		for k in ["sword", "archer", "cav"]:
 			orders[owner][k] = {"mode": HOLD, "pos": hp}
 		for i in 2:
-			_make_unit("villager", team, owner, kingdom.depot(team) + Vector3((i * 2 - 1) * 2.0, 0, 0))
+			_make_unit("villager", team, owner, kingdom.depot(team) + rotv(team, Vector3((i * 2 - 1) * 2.0, 0, 0)))
 		return
 	var ns: int = int(cfg.get("sword", 40))
 	var na: int = int(cfg.get("archer", 20))
@@ -319,7 +424,7 @@ func _make_unit(kind: String, team: int, owner: int, pos: Vector3, id := -1):
 	u.position = pos
 	add_child(u)
 	u.setup(kind, team, owner, self)
-	u.rotation.y = 0.0 if team == 0 else PI
+	u.rotation.y = ang(team)
 	u.tpos = pos
 	u.tyaw = u.rotation.y
 	u.puppet = not is_srv
@@ -379,7 +484,7 @@ func order_at(mode: int, mask: int, pos: Vector3, gar := -1) -> void:
 	if intro or over:
 		return
 	if is_srv:
-		_order_at(my_id, mode, mask, pos, gar)
+		_order_at(ctrl_owner(), mode, mask, pos, gar)
 	else:
 		order_at_msg.rpc_id(1, mode, mask, pos.x, pos.z, gar)
 
@@ -404,24 +509,36 @@ func team_king(t: int):
 	return null
 
 
+func duel_other(t: int) -> int:
+	if duel_teams[0] == t:
+		return duel_teams[1]
+	if duel_teams[1] == t:
+		return duel_teams[0]
+	return -1
+
+
 func nearest_enemy(u, r: float):
 	if kingdom != null:
 		if not war or u.kind == "villager":
 			return null
 		if duel_active:
-			var k = team_king(1 - u.team)
+			var ot := duel_other(u.team)
+			var k = team_king(ot) if ot >= 0 else null
 			if u.kind == "hero" and k != null and u.position.distance_squared_to(k.position) < r * r:
 				return k
 			return null
 	var best = null
 	var bd := r * r
-	for e in by_team[1 - u.team]:
-		if e.dead or e.kind == "villager":
+	for ti in nk:
+		if not hostile(u.team, ti):
 			continue
-		var d: float = u.position.distance_squared_to(e.position)
-		if d < bd:
-			bd = d
-			best = e
+		for e in by_team[ti]:
+			if e.dead or e.kind == "villager":
+				continue
+			var d: float = u.position.distance_squared_to(e.position)
+			if d < bd:
+				bd = d
+				best = e
 	return best
 
 
@@ -430,26 +547,32 @@ func pick_target(u):
 		if not war:
 			return null
 		if duel_active:
-			return team_king(1 - u.team) if u.kind == "hero" else null
+			if u.kind != "hero":
+				return null
+			var ot := duel_other(u.team)
+			return team_king(ot) if ot >= 0 else null
 	var h = hunt.get(u.team)
 	if u.kind == "cav" and h != null and is_instance_valid(h) and not h.dead and randf() < 0.85:
 		return h
 	var best = null
 	var bs := 1e18
-	for e in by_team[1 - u.team]:
-		if e.dead or e.kind == "villager":
+	for ti in nk:
+		if not hostile(u.team, ti):
 			continue
-		var d: float = u.position.distance_squared_to(e.position)
-		var s := d
-		if u.kind == "cav" and e.kind == "archer":
-			s *= 0.3
-		elif u.kind == "archer":
-			s = d * (0.4 + e.hp / e.max_hp)
-		if e.kind == "hero":
-			s *= 0.7
-		if s < bs:
-			bs = s
-			best = e
+		for e in by_team[ti]:
+			if e.dead or e.kind == "villager":
+				continue
+			var d: float = u.position.distance_squared_to(e.position)
+			var s := d
+			if u.kind == "cav" and e.kind == "archer":
+				s *= 0.3
+			elif u.kind == "archer":
+				s = d * (0.4 + e.hp / e.max_hp)
+			if e.kind == "hero":
+				s *= 0.7
+			if s < bs:
+				bs = s
+				best = e
 	return best
 
 
@@ -457,8 +580,11 @@ func enemy_front(u) -> Vector3:
 	var t = nearest_enemy(u, 1e9)
 	if t != null:
 		return t.position
-	if kingdom != null and kingdom.castle_alive(1 - u.team):
-		return Vector3(clampf(u.position.x, -28.0, 28.0), 0, -kingdom.castle_gate(u.team).z)
+	if kingdom != null:
+		var ft := foe(u.team)
+		if kingdom.castle_alive(ft):
+			var g: Vector3 = kingdom.gate_out(ft)
+			return g
 	return Vector3(u.position.x, 0, 0)
 
 
@@ -583,13 +709,16 @@ func _spawn_arrow(from: Vector3, to: Vector3, dur: float, team: int, dmg: float,
 func arrow_land(a) -> void:
 	var best = null
 	var bd := 2.0
-	for e in by_team[1 - a.team]:
-		if e.dead or e.kind == "villager":
+	for ti in nk:
+		if not hostile(a.team, ti):
 			continue
-		var d := Vector2(e.position.x - a.to_p.x, e.position.z - a.to_p.z).length()
-		if d < bd:
-			bd = d
-			best = e
+		for e in by_team[ti]:
+			if e.dead or e.kind == "villager":
+				continue
+			var d := Vector2(e.position.x - a.to_p.x, e.position.z - a.to_p.z).length()
+			if d < bd:
+				bd = d
+				best = e
 	if best != null:
 		best.take_damage(a.dmg)
 		var p: Vector3 = best.position + Vector3(0, 1.2, 0)
@@ -690,9 +819,13 @@ func fire_arrow_pos(from: Vector3, t, team: int, dmg: float) -> void:
 func castle_hit(u, dmg: float) -> void:
 	if kingdom == null:
 		return
-	kingdom.damage_castle(1 - u.team, dmg * kingdom.SIEGE_MULT)
-	var dzs: float = kingdom.dz_of(1 - u.team)
-	var p := Vector3(u.position.x, 4.0, -73.0 * dzs + 2.0 * dzs)
+	var ft: int = kingdom.target_castle(u)
+	if ft < 0:
+		return
+	kingdom.damage_castle(ft, dmg * kingdom.SIEGE_MULT, u.team)
+	var p: Vector3 = lw(ft, Vector3(0, 4.0, -71.0))
+	p.x = u.position.x
+	p.z = u.position.z
 	_fx(0, p)
 	if net.online:
 		fx.rpc(0, p)
@@ -981,18 +1114,18 @@ func _intro_step(t: float) -> void:
 		if t < 0.45:
 			var k := t / 0.45
 			var e := k * k * (3.0 - 2.0 * k)
-			a = Vector3(-60, 40, -dz * 36.0).lerp(Vector3(0, 11, -dz * 62.0), e)
-			look = Vector3(0, 6, -dz * 100.0).lerp(Vector3(0, 5, -dz * 80.0), e)
+			a = lw(my_team, Vector3(-60, 40, -36.0)).lerp(lw(my_team, Vector3(0, 11, -62.0)), e)
+			look = lw(my_team, Vector3(0, 6, -100.0)).lerp(lw(my_team, Vector3(0, 5, -80.0)), e)
 		elif t < 0.75:
 			var k2 := (t - 0.45) / 0.3
 			var e2 := k2 * k2 * (3.0 - 2.0 * k2)
-			a = Vector3(0, 11, -dz * 62.0).lerp(Vector3(0, 9, -dz * 84.0), e2)
-			look = Vector3(0, 5, -dz * 80.0).lerp(Vector3(0, 6, -dz * 112.0), e2)
+			a = lw(my_team, Vector3(0, 11, -62.0)).lerp(lw(my_team, Vector3(0, 9, -84.0)), e2)
+			look = lw(my_team, Vector3(0, 5, -80.0)).lerp(lw(my_team, Vector3(0, 6, -112.0)), e2)
 		else:
 			var k3 := (t - 0.75) / 0.25
 			var e3 := k3 * k3 * (3.0 - 2.0 * k3)
-			a = Vector3(0, 9, -dz * 84.0).lerp(fin, e3)
-			look = Vector3(0, 6, -dz * 112.0).lerp(kpos + Vector3(0, 1.8, 0), e3)
+			a = lw(my_team, Vector3(0, 9, -84.0)).lerp(fin, e3)
+			look = lw(my_team, Vector3(0, 6, -112.0)).lerp(kpos + Vector3(0, 1.8, 0), e3)
 		cam.position = a
 		cam.look_at(look)
 		return
@@ -1089,7 +1222,7 @@ func _build_hud() -> void:
 
 	hud["top"] = Label.new()
 	hud.top.position = Vector2(20, 12) * u
-	hud.top.add_theme_font_size_override("font_size", int(26 * u))
+	hud.top.add_theme_font_size_override("font_size", int(22 * u))
 	hud.top.add_theme_color_override("font_outline_color", Color.BLACK)
 	hud.top.add_theme_constant_override("outline_size", 6)
 	root.add_child(hud.top)
@@ -1104,10 +1237,11 @@ func _build_hud() -> void:
 	root.add_child(hud.hp)
 
 	hud["msg"] = Label.new()
-	hud.msg.position = Vector2(0, vs.y * 0.2)
-	hud.msg.size = Vector2(vs.x, 60 * u)
+	hud.msg.position = Vector2(vs.x * 0.16, vs.y * 0.34)
+	hud.msg.size = Vector2(vs.x * 0.68, 60 * u)
+	hud.msg.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	hud.msg.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	hud.msg.add_theme_font_size_override("font_size", int(30 * u))
+	hud.msg.add_theme_font_size_override("font_size", int(27 * u))
 	hud.msg.add_theme_color_override("font_outline_color", Color.BLACK)
 	hud.msg.add_theme_constant_override("outline_size", 8)
 	hud.msg.modulate.a = 0.0
@@ -1165,6 +1299,12 @@ func _build_hud() -> void:
 	ob.pressed.connect(_open_options)
 	root.add_child(ob)
 	hud["opt_btn"] = ob
+	if String(cfg.get("mode", "battle")) != "kingdom":
+		var bm = BattleMapS.new()
+		bm.name = "BattleMap"
+		bm.battle = self
+		add_child(bm)
+		bm.build_ui(root, u, vs)
 
 	# joystick
 	hud["stick_base"] = _circle_panel(150 * u, Color(1, 1, 1, 0.12))
@@ -1339,7 +1479,8 @@ func _physics_process(dt: float) -> void:
 	game_time += dt
 	if not is_srv:
 		return
-	by_team = [[], []]
+	for i in nk:
+		by_team[i] = []
 	grid.clear()
 	for u in units.values():
 		if u.dead:
@@ -1392,7 +1533,22 @@ func _process(dt: float) -> void:
 		mv = Vector3.ZERO
 	var h = heroes.get(my_id)
 	if is_srv:
-		if h != null and is_instance_valid(h):
+		var drv = null
+		if admin and admin_ctrl and kingdom != null and kingdom.vteam() != my_team and not net.online:
+			for uu in units.values():
+				if uu.kind == "hero" and uu.team == kingdom.vteam() and not uu.dead:
+					drv = uu
+					uu.driven = true
+					break
+		for uu2 in units.values():
+			if uu2.driven and uu2 != drv:
+				uu2.driven = false
+				uu2.move_in = Vector3.ZERO
+		if drv != null:
+			drv.move_in = mv
+			if h != null and is_instance_valid(h):
+				h.move_in = Vector3.ZERO
+		elif h != null and is_instance_valid(h):
 			h.move_in = mv
 	else:
 		send_t -= dt
@@ -1409,6 +1565,14 @@ func _update_camera(dt: float, h) -> void:
 	if not cine.is_empty():
 		_cine_step(dt)
 		return
+	if admin and kingdom != null and kingdom.vteam() != my_team:
+		h = null
+		for uu in units.values():
+			if uu.kind == "hero" and uu.team == kingdom.vteam() and not uu.dead:
+				h = uu
+				break
+		if h == null:
+			spec_pos = kingdom.home_pos(kingdom.vteam())
 	var alive: bool = h != null and is_instance_valid(h) and not h.dead
 	if alive:
 		cam_focus = cam_focus.lerp(h.position, clampf(dt * 9.0, 0.0, 1.0))
@@ -1450,7 +1614,7 @@ func _update_hud(dt: float, h, v: Vector2) -> void:
 			enemy += 1
 	if mine > 0:
 		spec_pos = sp / mine
-	hud.top.text = LocS.t(("YOUR SOLDIERS: %d     ENEMY: %d" if kingdom != null else "YOUR ARMY: %d     ENEMY: %d") % [mine, enemy])
+	hud.top.text = LocS.t(("ARMY: %d   ENEMY: %d" if kingdom != null else "YOUR ARMY: %d     ENEMY: %d") % [mine, enemy])
 	if h != null and is_instance_valid(h):
 		hud.hp.value = h.hp
 		hud.hp.max_value = h.max_hp
