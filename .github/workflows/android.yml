@@ -19,6 +19,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Stamp build number (lets light updates know how new the app is)
+        run: |
+          N=$(git rev-list --count HEAD)
+          printf 'extends RefCounted\nconst BUILD := %s\n' "$N" > game/build.gd
 
       - uses: actions/setup-java@v4
         with:
@@ -69,7 +76,11 @@ jobs:
           name: MedievalWars-android-apk
           path: build/MedievalWars.apk
 
+      # Pull-request runs get a read-only token, so only publish on push / manual runs.
+      # If publishing ever fails, the APK is still in the run's "Artifacts".
       - name: Publish release (download the APK straight on your phone)
+        if: github.event_name != 'pull_request'
+        continue-on-error: true
         uses: softprops/action-gh-release@v2
         with:
           tag_name: android-${{ github.run_number }}
