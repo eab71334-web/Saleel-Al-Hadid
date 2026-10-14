@@ -2,6 +2,7 @@ extends RefCounted
 # Arabic translation of every on-screen text. English strings are the keys.
 # Texts with %d / %s are matched as patterns, so formatted messages translate too.
 
+const Loc2S := preload("res://game/loc2.gd")
 static var lang := "en"
 static var _pat: Array = []
 static var _built := false
@@ -219,7 +220,9 @@ static func _esc(s: String) -> String:
 static func _build() -> void:
 	_built = true
 	_pat.clear()
-	for k in AR.keys():
+	var allk := AR.duplicate()
+	allk.merge(Loc2S.AR2)
+	for k in allk.keys():
 		var key: String = k
 		if not (key.contains("%d") or key.contains("%s")):
 			continue
@@ -245,7 +248,7 @@ static func _build() -> void:
 		rx += _esc(seg)
 		var re := RegEx.new()
 		if re.compile("^" + rx + "$") == OK:
-			_pat.append({"re": re, "types": types, "ar": AR[k]})
+			_pat.append({"re": re, "types": types, "ar": allk[k]})
 
 
 static func t(s: String) -> String:
@@ -253,6 +256,8 @@ static func t(s: String) -> String:
 		return s
 	if AR.has(s):
 		return AR[s]
+	if Loc2S.AR2.has(s):
+		return Loc2S.AR2[s]
 	if not _built:
 		_build()
 	for p in _pat:
