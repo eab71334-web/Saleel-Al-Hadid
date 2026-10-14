@@ -64,8 +64,8 @@ func _build_fort(t: int) -> void:
 	var cloth := _m(tc, 0.8, 0.0, 0.5)
 	var gold_m := _m(Color(1.0, 0.78, 0.25), 0.9, 0.25, 0.3)
 	var wood := _m(Color(0.32, 0.2, 0.1), 0.9)
-	var cobble := _m(Color(0.46, 0.44, 0.41), 1.0)
-	var road := _m(Color(0.62, 0.58, 0.5), 1.0)
+	var cobble := _m(Color(0.33, 0.3, 0.27), 1.0)
+	var road := _m(Color(0.5, 0.4, 0.28), 1.0)
 	var roofm := _m(Color(0.34, 0.17, 0.12), 0.85)
 	var flame := _m(Color(1.0, 0.55, 0.15), 0.5, 0.0, 4.0)
 
