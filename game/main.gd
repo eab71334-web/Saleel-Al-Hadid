@@ -7,6 +7,8 @@ const Build := preload("res://game/build.gd")
 const LocS := preload("res://game/loc.gd")
 const CardsS := preload("res://game/menucards.gd")
 const SettingsS := preload("res://game/settings.gd")
+const MusicLibS := preload("res://game/music.gd")
+const MenuBgS := preload("res://game/menubg.gd")
 
 var net
 var ui: Control
@@ -24,6 +26,8 @@ var _upd_btn: Button
 var _start_btn: Button
 var _room_lbl: Label
 var _loc_t := 0.0
+var _ttime := 0.0
+var _menu_music: AudioStreamPlayer
 var _fps_lbl: Label
 
 
@@ -41,10 +45,11 @@ func _ready() -> void:
 	net = preload("res://game/net.gd").new()
 	net.name = "Net"
 	add_child(net)
+	if LocS.lang == "ar":
+		net.my_name = "فارس%d" % (randi() % 100)
 	ui_layer = CanvasLayer.new()
 	add_child(ui_layer)
-	var th := Theme.new()
-	th.default_font_size = 34
+	var th := _make_theme()
 	ui = Control.new()
 	ui.set_anchors_preset(Control.PRESET_FULL_RECT)
 	ui.theme = th
@@ -68,10 +73,22 @@ func _ready() -> void:
 	fl.layer = 50
 	fl.add_child(_fps_lbl)
 	add_child(fl)
+	_menu_music = AudioStreamPlayer.new()
+	_menu_music.stream = MusicLibS.compose(88.0, 0.45)
+	_menu_music.volume_db = -40.0
+	add_child(_menu_music)
+	_menu_music.play()
+	create_tween().tween_property(_menu_music, "volume_db", -8.0, 3.0)
 	_show_menu()
 
 
 func _process(dt: float) -> void:
+	_ttime += dt
+	if _title_lbl != null and is_instance_valid(_title_lbl) and _title_lbl.is_inside_tree():
+		var k := 0.5 + 0.5 * sin(_ttime * 2.0)
+		_title_lbl.add_theme_color_override("font_color", Color(1, 0.72, 0.25).lerp(Color(1, 0.95, 0.6), k))
+		_title_lbl.pivot_offset = _title_lbl.size * 0.5
+		_title_lbl.scale = Vector2.ONE * (1.0 + 0.025 * sin(_ttime * 1.6))
 	_loc_t -= dt
 	if _loc_t <= 0.0:
 		_loc_t = 0.3
@@ -89,19 +106,84 @@ func back_to_menu() -> void:
 
 
 # ---------------------------------------------------------------- ui helpers
+const GOLD := Color(1, 0.82, 0.35)
+var _footer: HBoxContainer
+var _title_lbl: Label
+
+
+func _sb(bg: Color, border: Color, rad := 14, bw := 3) -> StyleBoxFlat:
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = bg
+	sb.border_color = border
+	sb.set_border_width_all(bw)
+	sb.set_corner_radius_all(rad)
+	sb.content_margin_left = 22
+	sb.content_margin_right = 22
+	sb.content_margin_top = 10
+	sb.content_margin_bottom = 10
+	sb.shadow_color = Color(0, 0, 0, 0.5)
+	sb.shadow_size = 8
+	return sb
+
+
+func _make_theme() -> Theme:
+	var th := Theme.new()
+	th.default_font_size = 30
+	th.set_stylebox("normal", "Button", _sb(Color(0.16, 0.1, 0.07, 0.95), Color(0.75, 0.55, 0.2)))
+	th.set_stylebox("hover", "Button", _sb(Color(0.28, 0.17, 0.08, 0.98), Color(1, 0.82, 0.35)))
+	th.set_stylebox("pressed", "Button", _sb(Color(0.45, 0.25, 0.06, 1), Color(1, 0.9, 0.5)))
+	th.set_stylebox("disabled", "Button", _sb(Color(0.12, 0.12, 0.14, 0.8), Color(0.3, 0.3, 0.33)))
+	th.set_stylebox("focus", "Button", StyleBoxEmpty.new())
+	th.set_color("font_color", "Button", Color(1, 0.93, 0.75))
+	th.set_color("font_hover_color", "Button", Color(1, 1, 0.85))
+	th.set_color("font_disabled_color", "Button", Color(0.5, 0.5, 0.55))
+	th.set_stylebox("normal", "LineEdit", _sb(Color(0.05, 0.05, 0.08, 0.95), Color(0.5, 0.45, 0.3), 10, 2))
+	th.set_color("font_color", "LineEdit", Color(1, 1, 1))
+	var gs := _sb(Color(0.4, 0.3, 0.12), Color(0.4, 0.3, 0.12), 6, 0)
+	gs.content_margin_top = 4
+	gs.content_margin_bottom = 4
+	th.set_stylebox("slider", "HSlider", _sb(Color(0.05, 0.05, 0.08), Color(0.5, 0.4, 0.2), 6, 1))
+	th.set_stylebox("grabber_area", "HSlider", gs)
+	th.set_stylebox("grabber_area_highlight", "HSlider", gs)
+	return th
+
+
 func _clear() -> VBoxContainer:
 	for c in ui.get_children():
+		ui.remove_child(c)       # gone at once (queue_free alone left ghost text for a frame)
 		c.queue_free()
-	var bg := ColorRect.new()
+	var bg := MenuBgS.new()
 	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
-	bg.color = Color(0.07, 0.06, 0.1)
 	ui.add_child(bg)
+	var dim := ColorRect.new()
+	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	dim.color = Color(0, 0, 0, 0.25)
+	dim.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	ui.add_child(dim)
+	var root := VBoxContainer.new()
+	root.set_anchors_preset(Control.PRESET_FULL_RECT)
+	root.offset_left = 24
+	root.offset_right = -24
+	root.offset_top = 10
+	root.offset_bottom = -10
+	root.add_theme_constant_override("separation", 8)
+	ui.add_child(root)
+	var sc := ScrollContainer.new()
+	sc.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	sc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	root.add_child(sc)
 	var cc := CenterContainer.new()
-	cc.set_anchors_preset(Control.PRESET_FULL_RECT)
-	ui.add_child(cc)
+	cc.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	cc.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	sc.add_child(cc)
 	var vb := VBoxContainer.new()
-	vb.add_theme_constant_override("separation", 14)
+	vb.add_theme_constant_override("separation", 12)
+	vb.custom_minimum_size = Vector2(720, 0)
 	cc.add_child(vb)
+	_footer = HBoxContainer.new()
+	_footer.alignment = BoxContainer.ALIGNMENT_CENTER
+	_footer.add_theme_constant_override("separation", 16)
+	root.add_child(_footer)
 	return vb
 
 
@@ -110,7 +192,12 @@ func _label(p: Control, text: String, size := 34, col := Color.WHITE) -> Label:
 	l.text = text
 	l.add_theme_font_size_override("font_size", size)
 	l.add_theme_color_override("font_color", col)
+	l.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9))
+	l.add_theme_constant_override("outline_size", maxi(3, size / 8))
 	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	l.custom_minimum_size = Vector2(0, 0)
+	l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	p.add_child(l)
 	return l
 
@@ -118,15 +205,33 @@ func _label(p: Control, text: String, size := 34, col := Color.WHITE) -> Label:
 func _button(p: Control, text: String, cb: Callable) -> Button:
 	var b := Button.new()
 	b.text = text
-	b.custom_minimum_size = Vector2(560, 84)
+	b.custom_minimum_size = Vector2(520, 76)
 	b.pressed.connect(cb)
 	p.add_child(b)
 	return b
 
 
+# pinned bottom button (Back / Start): always visible, never scrolls away
+func _fbutton(text: String, cb: Callable, accent := false) -> Button:
+	var b := Button.new()
+	b.text = text
+	b.custom_minimum_size = Vector2(300, 74)
+	b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	b.pressed.connect(cb)
+	if accent:
+		b.add_theme_stylebox_override("normal", _sb(Color(0.5, 0.12, 0.1, 0.97), Color(1, 0.75, 0.3)))
+		b.add_theme_stylebox_override("hover", _sb(Color(0.7, 0.18, 0.12, 1), Color(1, 0.9, 0.5)))
+	_footer.add_child(b)
+	return b
+
+
+func _title(vb: Control, text: String) -> void:
+	var l := _label(vb, text, 54, GOLD)
+	l.add_theme_constant_override("outline_size", 10)
+
+
 func _wrap(l: Label) -> void:
 	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	l.custom_minimum_size = Vector2(700, 0)
 
 
 func _set_status(t: String) -> void:
@@ -138,7 +243,9 @@ func _set_status(t: String) -> void:
 func _show_menu() -> void:
 	net.stop_listening()
 	var vb := _clear()
-	_label(vb, "MEDIEVAL WARS", 72, Color(1, 0.82, 0.35))
+	_title_lbl = _label(vb, "MEDIEVAL WARS", 84 if LocS.lang != "ar" else 64, GOLD)
+	_title_lbl.autowrap_mode = TextServer.AUTOWRAP_OFF
+	_title_lbl.add_theme_constant_override("outline_size", 14)
 	_label(vb, "Swords  -  Bows  -  Kingdoms", 30, Color(0.8, 0.8, 0.85))
 	_label(vb, " ", 20)
 	_button(vb, "PLAY", func(): _show_play())
@@ -156,7 +263,7 @@ func _show_menu() -> void:
 
 func _show_play() -> void:
 	var vb := _clear()
-	_label(vb, "Choose your game", 52, Color(1, 0.82, 0.35))
+	_title(vb, "Choose your game")
 	var cards := CardsS.new()
 	cards.custom_minimum_size = Vector2(1000, 430)
 	cards.cards = [
@@ -169,21 +276,21 @@ func _show_play() -> void:
 		_mode = "solo"
 		_show_lobby(true))
 	vb.add_child(cards)
-	_button(vb, "Back", func(): _show_menu())
+	_fbutton("Back", func(): _show_menu())
 
 
 func _show_local() -> void:
 	var vb := _clear()
-	_label(vb, "LOCAL (Wi-Fi)", 56, Color(1, 0.82, 0.35))
+	_title(vb, "LOCAL (Wi-Fi)")
 	_label(vb, "Play with friends on the same Wi-Fi", 26, Color(0.8, 0.8, 0.85))
 	_button(vb, "Create Room", func():
 		if net.host_game():
 			_mode = "host"
 			_show_lobby(true)
 		else:
-			_set_status("Could not host (port busy?)"))
+			_set_status("Could not host. Close the game fully and reopen it, check Wi-Fi is on."))
 	_button(vb, "Join Room", func(): _show_join())
-	_button(vb, "Back", func(): _show_menu())
+	_fbutton("Back", func(): _show_menu())
 	_status = _label(vb, "", 26, Color(1, 0.5, 0.4))
 	_wrap(_status)
 
@@ -197,9 +304,9 @@ func _refresh_update() -> void:
 
 func _show_join() -> void:
 	var vb := _clear()
-	_label(vb, "Join LAN Game", 56, Color(1, 0.82, 0.35))
+	_title(vb, "Join LAN Game")
 	var mine: Array = net.local_ips()
-	_label(vb, "Your IP: %s  (the host must be on the same Wi-Fi)" % (", ".join(mine) if not mine.is_empty() else "?"), 22, Color(0.7, 0.85, 1))
+	_label(vb, "Your IP: %s" % (", ".join(mine) if not mine.is_empty() else "?"), 24, Color(0.7, 0.85, 1))
 	_label(vb, "Games found on your Wi-Fi:", 28)
 	_hosts_box = VBoxContainer.new()
 	_hosts_box.add_theme_constant_override("separation", 10)
@@ -207,14 +314,14 @@ func _show_join() -> void:
 	_label(vb, "...or type the host IP:", 28)
 	_ip_edit = LineEdit.new()
 	_ip_edit.placeholder_text = "192.168.1.10"
-	_ip_edit.custom_minimum_size = Vector2(560, 76)
+	_ip_edit.custom_minimum_size = Vector2(0, 76)
 	vb.add_child(_ip_edit)
 	_button(vb, "Connect", func():
 		if net.join_game(_ip_edit.text):
 			_set_status("Connecting...")
 		else:
 			_set_status("Invalid address"))
-	_button(vb, "Back", func(): _show_local())
+	_fbutton("Back", func(): _show_local())
 	_status = _label(vb, "", 26, Color(1, 0.8, 0.4))
 	_wrap(_status)
 	net.start_listening()
@@ -223,7 +330,7 @@ func _show_join() -> void:
 
 func _show_settings() -> void:
 	var vb := _clear()
-	_label(vb, "Settings", 56, Color(1, 0.82, 0.35))
+	_title(vb, "Settings")
 	_button(vb, "Language: Arabic" if SettingsS.lang == "ar" else "Language: English", func():
 		SettingsS.set_lang("en" if SettingsS.lang == "ar" else "ar")
 		SettingsS.apply_global()
@@ -242,7 +349,7 @@ func _show_settings() -> void:
 		SettingsS.save()
 		_show_settings())
 	_label(vb, "Low = fastest. Use it if the game is slow or the phone gets hot.", 22, Color(0.7, 0.7, 0.75))
-	_button(vb, "Back", func(): _show_menu())
+	_fbutton("Back", func(): _show_menu())
 	LocS.apply_tree(ui)
 
 
@@ -264,14 +371,14 @@ func _refresh_hosts() -> void:
 		elif full:
 			label += "   (full)"
 		var jb := _button(_hosts_box, label, func():
-			if net.join_game(addr):
+			if net.join_game(addr, int(h.get("port", 24680))):
 				_set_status("Connecting..."))
 		jb.disabled = full or started
 
 
 func _show_lobby(is_host: bool) -> void:
 	var vb := _clear()
-	_label(vb, ("Kingdom" if String(cfg.get("mode", "battle")) == "kingdom" else "Army Setup") if _mode == "solo" else "LAN Lobby", 56, Color(1, 0.82, 0.35))
+	_title(vb, ("Kingdom" if String(cfg.get("mode", "battle")) == "kingdom" else "Army Setup") if _mode == "solo" else "LAN Lobby")
 	if _mode == "host":
 		var ips: Array = net.local_ips()
 		_label(vb, "Your IP: %s" % (", ".join(ips) if not ips.is_empty() else "?"), 26, Color(0.7, 0.85, 1))
@@ -284,7 +391,7 @@ func _show_lobby(is_host: bool) -> void:
 		caps.max_value = 6
 		caps.step = 1
 		caps.value = net.max_players
-		caps.custom_minimum_size = Vector2(560, 50)
+		caps.custom_minimum_size = Vector2(0, 50)
 		caps.value_changed.connect(func(v):
 			net.max_players = maxi(int(v), net.players.size())
 			caps.set_value_no_signal(net.max_players)
@@ -305,22 +412,22 @@ func _show_lobby(is_host: bool) -> void:
 			ks.max_value = 6
 			ks.step = 1
 			ks.value = cfg.kingdoms
-			ks.custom_minimum_size = Vector2(560, 50)
+			ks.custom_minimum_size = Vector2(0, 50)
 			ks.value_changed.connect(func(v):
 				cfg.kingdoms = maxi(int(v), maxi(2, net.players.size()))
 				ks.set_value_no_signal(cfg.kingdoms)
 				kl.text = LocS.t("Kingdoms: %d" % int(cfg.kingdoms)) if LocS.lang == "ar" else "Kingdoms: %d" % int(cfg.kingdoms)
 				_refresh_lobby())
 			vb.add_child(ks)
-			_start_btn = _button(vb, "START KINGDOM", func(): _start())
+			_start_btn = _fbutton("START KINGDOM", func(): _start(), true)
 		else:
 			_slider(vb, "Swordsmen", "sword", 0, 80)
 			_slider(vb, "Archers", "archer", 0, 50)
 			_slider(vb, "Cavalry", "cav", 0, 30)
-			_start_btn = _button(vb, "START BATTLE", func(): _start())
+			_start_btn = _fbutton("START BATTLE", func(): _start(), true)
 	else:
 		_label(vb, "Waiting for the host to start...", 32)
-	_button(vb, "Back", func():
+	_fbutton("Back", func():
 		net.leave()
 		_show_menu())
 	_refresh_lobby()
@@ -333,7 +440,7 @@ func _slider(p: Control, title: String, key: String, lo: int, hi: int) -> void:
 	s.max_value = hi
 	s.step = 1
 	s.value = cfg[key]
-	s.custom_minimum_size = Vector2(560, 50)
+	s.custom_minimum_size = Vector2(0, 50)
 	s.value_changed.connect(func(v):
 		cfg[key] = int(v)
 		l.text = "%s: %d" % [title, int(v)])
@@ -380,6 +487,8 @@ func _on_start(c: Dictionary) -> void:
 	if battle != null:
 		return
 	cfg = c
+	if _menu_music != null:
+		_menu_music.stop()
 	ui_layer.visible = false
 	battle = BattleS.new()
 	battle.name = "Battle"
