@@ -49,7 +49,7 @@ func build(u: float, vs: Vector2) -> void:
 	panel.add_theme_stylebox_override("panel", sb)
 	var pw := minf(vs.x - 40 * u, 980 * u)
 	panel.custom_minimum_size = Vector2(pw, 0)
-	panel.position = Vector2((vs.x - pw) * 0.5, maxf(8 * u, (vs.y - 520 * u) * 0.5))
+	panel.position = Vector2((vs.x - pw) * 0.5, 6 * u)
 	add_child(panel)
 	var hb := HBoxContainer.new()
 	hb.add_theme_constant_override("separation", int(18 * u))
@@ -73,7 +73,7 @@ func build(u: float, vs: Vector2) -> void:
 	speech.add_theme_font_size_override("font_size", int(22 * u))
 	speech.add_theme_color_override("font_color", Color(0.95, 0.92, 0.85))
 	vb.add_child(speech)
-	var kinds := [["sword", "Swordsmen"], ["archer", "Archers"], ["cav", "Cavalry"]]
+	var kinds := [["sword", "Swordsmen"], ["archer", "Archers"], ["cav", "Cavalry"], ["ballista", "Ballistas"], ["catapult", "Catapults"]]
 	for kd in kinds:
 		var row := HBoxContainer.new()
 		row.add_theme_constant_override("separation", int(10 * u))
@@ -141,7 +141,7 @@ func _preset(f: float) -> void:
 func open(tt: int) -> void:
 	target = tt
 	var vt: int = kingdom.vteam()
-	_avail = {"sword": 0, "archer": 0, "cav": 0}
+	_avail = {"sword": 0, "archer": 0, "cav": 0, "ballista": 0, "catapult": 0}
 	for u in battle.by_team[vt]:
 		if not u.dead and _avail.has(u.kind):
 			_avail[u.kind] += 1
@@ -182,7 +182,7 @@ func _speak(s: String) -> void:
 
 
 func _confirm() -> void:
-	var total: int = int(vals.sword) + int(vals.archer) + int(vals.cav)
+	var total: int = int(vals.sword) + int(vals.archer) + int(vals.cav) + int(vals.ballista) + int(vals.catapult)
 	if total <= 0:
 		_say(LocS.t("Send at least one soldier, my king."))
 		return
@@ -192,7 +192,7 @@ func _confirm() -> void:
 	var order := ("تأكيد هجوم! استعدوا يا أبطال، الهجوم على قلعة %s! للنصر والمجد!" % nm) if ar else "Attack confirmed! Ready yourselves, warriors - we march on the castle of %s! For glory!" % nm
 	_say(order)
 	_speak(order)
-	battle.strike(target, int(vals.sword), int(vals.archer), int(vals.cav))
+	battle.strike(target, int(vals.sword), int(vals.archer), int(vals.cav), int(vals.ballista), int(vals.catapult))
 	battle.sfx.play_ui("horn", 2.0)
 	battle.sfx.set_theme("epic_attack")
 	battle.banner(("الهجوم على %s" % nm) if ar else "ATTACK ON %s" % nm.to_upper(), battle.team_col(target), 3.0)
@@ -215,7 +215,7 @@ func _process(dt: float) -> void:
 	else:
 		speech.text = _type_txt
 	for k in sliders.keys():
-		var nmk: String = {"sword": "Swordsmen", "archer": "Archers", "cav": "Cavalry"}[k]
+		var nmk: String = {"sword": "Swordsmen", "archer": "Archers", "cav": "Cavalry", "ballista": "Ballistas", "catapult": "Catapults"}[k]
 		lbls[k].text = LocS.t(nmk) + ": %d / %d" % [int(vals[k]), int(_avail.get(k, 0))]
 	face.queue_redraw()
 
