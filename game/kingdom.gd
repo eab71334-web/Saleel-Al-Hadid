@@ -31,7 +31,16 @@ const UPGRADE := [[150, 60], [320, 140]]
 const REPAIR_COST := 70
 const SLOT_LIMIT := [6, 9, 12]
 # kind: [gold, food, seconds, castle level needed]
-const TRAIN := {"sword": [30, 20, 4.0, 1], "archer": [40, 25, 5.0, 2], "cav": [90, 50, 7.0, 3]}
+const TRAIN := {"sword": [30, 20, 4.0, 1], "archer": [40, 25, 5.0, 2], "cav": [90, 50, 7.0, 3],
+	"ballista": [110, 40, 8.0, 2], "catapult": [170, 60, 10.0, 3]}
+const WOOD_START := 30.0
+const PLANK_GOLD := 40
+const PLANK_WOOD := 20
+const SHIP_GOLD := 100
+const SHIP_WOOD := 40
+const MAX_SHIPS := 3
+const WALL_Y := 6.8
+const RAMP_X := 12.0
 const SIEGE_MULT := 0.2
 const FOOD_UPKEEP := 0.08
 const LETTER_CD := 10.0
@@ -62,6 +71,8 @@ var tree_food := [[], []]
 var pop_used := [0, 0]
 var vill_n := [0, 0]
 var soldier_n := [0, 0]
+var wood := [0.0, 0.0]
+var ship_n := [0, 0]
 var queue := [[], []]
 var letter_cd := [0.0, 0.0]
 var decree_cd := [{"tax": 0.0, "feast": 0.0}, {"tax": 0.0, "feast": 0.0}]
@@ -196,6 +207,53 @@ func plot_pos(t: int, i: int) -> Vector3:
 	return lw(t, Vector3(lx, 0.0, -72.0 - ld))
 
 
+# where new ships appear: on the water behind the castle's rear wall
+func dock_pos(t: int) -> Vector3:
+	return lw(t, Vector3(0.0, 0.0, -(battle.coast_r - battle.ring_r + 73.0 + 8.0)))
+
+
+# ---- wall walk and stairs ----
+func has_wall(t: int) -> bool:
+	return not fallen[t]
+
+
+# ground height for a unit standing at p (stairs rise toward the front wall, the wall walk is WALL_Y high)
+func ground_y(t: int, p: Vector3) -> float:
+	var l := wl(t, p)
+	var d := -l.z
+	var ax := absf(l.x)
+	if d < 75.5 or d > 97.5 or ax > 34.0:
+		return 0.0
+	if absf(ax - RAMP_X) < 2.4 and d > 77.0:
+		return WALL_Y * clampf((97.0 - d) / 19.0, 0.0, 1.0)
+	if d <= 78.8 and ax > 6.0:
+		return WALL_Y
+	return 0.0
+
+
+func wall_slot(t: int, uid: int) -> Vector3:
+	var side := -1.0 if uid % 2 == 0 else 1.0
+	var lx: float = side * (7.5 + float((uid * 7) % 24))
+	if absf(absf(lx) - RAMP_X) < 2.0:
+		lx += side * 3.0
+	return lw(t, Vector3(lx, WALL_Y, -76.6))
+
+
+# waypoint for climbing: up the stairs on the target's side, then along the wall walk
+func wall_via(t: int, from: Vector3, slot: Vector3) -> Vector3:
+	var lf := wl(t, from)
+	var ls := wl(t, slot)
+	var side := -1.0 if ls.x < 0.0 else 1.0
+	if from.y > 3.2:
+		return slot
+	var df := -lf.z
+	if df > 99.0 or absf(lf.x - side * RAMP_X) > 3.6:
+		# get to the foot of the stairs first (through the gate if outside)
+		var foot := lw(t, Vector3(side * RAMP_X, 0.0, -98.5))
+		return via(t, from, foot)
+	return lw(t, Vector3(side * RAMP_X, 0.0, -77.4))
+
+
 func depot(t: int) -> Vector3:
 	return lw(t, Vector3(0.0, 0.0, -86.0))
 
@@ -264,6 +322,16 @@ func _solid(t: int, p: Vector3) -> bool:
 
 # Walls stop units (except through the open gate). Called after every step of a unit.
 func constrain(u, oldp: Vector3) -> void:
+	if u.kind == "ship":
+		return
+	var gy := 0.0
+	for t2 in nk:
+		if not fallen[t2]:
+			gy = maxf(gy, ground_y(t2, u.position))
+	if gy > 3.0 and oldp.y < 2.0:
+		u.position = oldp        # the wall walk can only be entered by the stairs
+		return
+	u.position.y = move_toward(oldp.y, gy, 9.0 * u._dt)
 	for t in nk:
 		if fallen[t]:
 			continue
@@ -371,12 +439,12 @@ func setup() -> void:
 	is_srv = battle.is_srv
 	my_team = battle.my_team
 	nk = battle.nk
-	gold = []; food = []; level = []; slots = []; castle_hp = []; fallen = []
+	gold = []; food = []; level = []; slots = []; castle_hp = []; fallen = []; wood = []; ship_n = []
 	tree_pos = []; tree_food = []; pop_used = []; vill_n = []; soldier_n = []; queue = []
 	letter_cd = []; decree_cd = []; plot_type = []; plot_nodes = []; plot_marks = []
 	tree_nodes = []; extras = []; fires = []; gate_open = []; ai_next = []; ai_info = []; march_cd = []
 	for t in nk:
-		gold.append(START_GOLD); food.append(START_FOOD); level.append(1)
+		gold.append(START_GOLD); food.append(START_FOOD); level.append(1); wood.append(WOOD_START); ship_n.append(0)
 		slots.append([]); castle_hp.append(CASTLE_HP[0]); fallen.append(false)
 		tree_pos.append([]); tree_food.append([]); pop_used.append(0); vill_n.append(0); soldier_n.append(0)
 		queue.append([]); letter_cd.append(0.0); decree_cd.append({"tax": 0.0, "feast": 0.0})
@@ -613,6 +681,8 @@ func _state() -> Dictionary:
 	var sn := []
 	var qq := []
 	var fa := []
+	var wd := []
+	var shp := []
 	for t in nk:
 		var a := []
 		for v in tree_food[t]:
@@ -628,8 +698,10 @@ func _state() -> Dictionary:
 		sn.append(soldier_n[t])
 		qq.append(queue[t].size())
 		fa.append(fallen[t])
+		wd.append(int(wood[t]))
+		shp.append(ship_n[t])
 	return {"w": battle.war, "wp": war_pairs.keys(), "g": gl, "f": fl, "l": lv, "s": sl, "h": hp, "tf": tf,
-		"pu": pu, "vn": vn, "sn": sn, "q": qq, "fl": fa}
+		"pu": pu, "vn": vn, "sn": sn, "q": qq, "fl": fa, "wd": wd, "sh": shp}
 
 
 func _apply_state(s: Dictionary) -> void:
@@ -650,6 +722,8 @@ func _apply_state(s: Dictionary) -> void:
 		soldier_n[t] = int(s.sn[t])
 		queue[t] = _fake_q(int(s.q[t]))
 		fallen[t] = bool(s.fl[t])
+		wood[t] = float(s.wd[t])
+		ship_n[t] = int(s.sh[t])
 	_refresh_visuals()
 
 
@@ -767,6 +841,36 @@ func _cmd(owner: int, act: String, data: Dictionary) -> void:
 			gold[t] -= REPAIR_COST
 			castle_hp[t] = minf(mx, castle_hp[t] + mx * 0.25)
 			battle.sfx.play_ui("hammer", -4.0) if t == my_team else null
+		"planks":
+			if gold[t] < PLANK_GOLD:
+				if human: toast_team(t, "Not enough gold!")
+				return
+			gold[t] -= PLANK_GOLD
+			wood[t] += PLANK_WOOD
+		"ship":
+			if not battle.sea:
+				if human: toast_team(t, "Ships need the Island map.")
+				return
+			if level[t] < 2:
+				if human: toast_team(t, "Castle level 2 needed")
+				return
+			if ship_n[t] >= MAX_SHIPS:
+				if human: toast_team(t, "You already have the maximum number of ships.")
+				return
+			if gold[t] < SHIP_GOLD or wood[t] < SHIP_WOOD:
+				if human: toast_team(t, "Need %d gold and %d planks" % [SHIP_GOLD, SHIP_WOOD])
+				return
+			gold[t] -= SHIP_GOLD
+			wood[t] -= SHIP_WOOD
+			var sp: Vector3 = dock_pos(t) + battle.rotv(t, Vector3(float(ship_n[t]) * 9.0 - 9.0, 0, 0))
+			sp = battle.keep_on_sea(sp)
+			var sh = battle._make_unit("ship", t, owner, sp)
+			sh.rotation.y = atan2(sp.x, sp.z)
+			sh.scale = Vector3(1, 0.05, 1)
+			create_tween().tween_property(sh, "scale", Vector3.ONE, 1.4).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+			ship_n[t] += 1
+			ev_all("ship", {"team": t})
+			battle.sfx.play("hammer", sp, 4.0)
 		"buyfood":
 			if gold[t] < BUY_GOLD:
 				if human: toast_team(t, "Not enough gold!")
@@ -847,6 +951,8 @@ func _cmd(owner: int, act: String, data: Dictionary) -> void:
 
 
 func _send_letter(from_t: int, text: String, owner: int, to_t := -1) -> void:
+	if battle.ai_teams.has(from_t) and LocS.lang == "ar":
+		text = LocS.t(text)
 	if to_t < 0 or to_t >= nk or to_t == from_t:
 		to_t = battle.foe(from_t)
 	var id := next_msg
@@ -1113,21 +1219,27 @@ func _physics_process(dt: float) -> void:
 func _econ(dt: float) -> void:
 	var vn := []
 	var sn := []
+	var shn := []
 	for t in nk:
 		vn.append(0)
 		sn.append(0)
+		shn.append(0)
 	for u in battle.units.values():
 		if u.dead:
 			continue
 		if u.kind == "villager":
 			vn[u.team] += 1
+		elif u.kind == "ship":
+			shn[u.team] += 1
 		elif u.kind != "hero":
 			sn[u.team] += 1
+	ship_n = shn
 	vill_n = vn
 	soldier_n = sn
 	for t in nk:
 		var houses := count_slots(t, 1)
 		gold[t] += (houses * 0.5 + vn[t] * 0.1) * dt
+		wood[t] = minf(400.0, wood[t] + (0.25 + vn[t] * 0.1) * dt)
 		# everybody eats
 		food[t] = maxf(0.0, food[t] - float(vn[t] + sn[t]) * FOOD_UPKEEP * dt)
 		pop_used[t] = vn[t] + sn[t] + queue[t].size()
@@ -1470,7 +1582,11 @@ func _ai_tick(t: int) -> void:
 	if actions < 2 and barr >= 1 and vill_n[t] >= 3:
 		var roll := randf()
 		var kind := "sword"
-		if lv >= 3 and roll > 0.8:
+		if lv >= 3 and roll > 0.93:
+			kind = "catapult"
+		elif lv >= 2 and roll > 0.87:
+			kind = "ballista"
+		elif lv >= 3 and roll > 0.8:
 			kind = "cav"
 		elif lv >= 2 and roll > 0.45:
 			kind = "archer"
@@ -1560,6 +1676,30 @@ func _theme(u: float) -> Theme:
 	return th
 
 
+# Coloured HUD button: rounded, glowing border in the accent colour
+func style_btn(b: Button, col: Color, u: float) -> void:
+	var mk := func(bg: Color, bd: Color, bw: float) -> StyleBoxFlat:
+		var s := StyleBoxFlat.new()
+		s.bg_color = bg
+		s.border_color = bd
+		s.set_border_width_all(int(bw * u))
+		s.set_corner_radius_all(int(16 * u))
+		s.shadow_color = Color(col.r, col.g, col.b, 0.45)
+		s.shadow_size = int(7 * u)
+		s.content_margin_left = 10 * u
+		s.content_margin_right = 10 * u
+		s.content_margin_top = 6 * u
+		s.content_margin_bottom = 6 * u
+		return s
+	b.add_theme_stylebox_override("normal", mk.call(Color(col.r * 0.28, col.g * 0.28, col.b * 0.28, 0.93), col, 3.0))
+	b.add_theme_stylebox_override("hover", mk.call(Color(col.r * 0.45, col.g * 0.45, col.b * 0.45, 0.97), col.lightened(0.3), 3.0))
+	b.add_theme_stylebox_override("pressed", mk.call(Color(col.r * 0.7, col.g * 0.7, col.b * 0.7, 1.0), Color.WHITE, 3.0))
+	b.add_theme_color_override("font_color", Color(1, 0.97, 0.88))
+	b.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
+	b.add_theme_constant_override("outline_size", int(4 * u))
+	b.add_theme_font_size_override("font_size", int(24 * u))
+
+
 func _parch(u: float) -> StyleBoxFlat:
 	var s := StyleBoxFlat.new()
 	s.bg_color = Color(0.89, 0.8, 0.6)
@@ -1608,6 +1748,7 @@ func _build_ui() -> void:
 	city.size = Vector2(150, 58) * u
 	city.pressed.connect(_toggle_panel)
 	root.add_child(city)
+	style_btn(city, Color(0.35, 0.8, 0.4), u)
 	ui["city"] = city
 	# castle bars + status
 	var cx := vs.x * 0.5
@@ -1675,7 +1816,12 @@ func _build_ui() -> void:
 	ui["panel"] = panel
 	var vb := VBoxContainer.new()
 	vb.add_theme_constant_override("separation", int(8 * u))
-	panel.add_child(vb)
+	var psc := ScrollContainer.new()
+	psc.custom_minimum_size = Vector2(660 * u, minf(vs.y - 60 * u, 640 * u))
+	psc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	panel.add_child(psc)
+	vb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	psc.add_child(vb)
 	var head := HBoxContainer.new()
 	vb.add_child(head)
 	var tl := _label(head, "YOUR KINGDOM", int(26 * u), Color(1.0, 0.85, 0.4))
@@ -1725,6 +1871,17 @@ func _build_ui() -> void:
 	mkb.call(g2, "b_sword", func(): cmd("train", {"kind": "sword"}), 208.0)
 	mkb.call(g2, "b_archer", func(): cmd("train", {"kind": "archer"}), 208.0)
 	mkb.call(g2, "b_cav", func(): cmd("train", {"kind": "cav"}), 208.0)
+	_label(vb, "SIEGE AND SEA", int(20 * u), Color(0.8, 0.8, 0.85))
+	var g2b := HBoxContainer.new()
+	g2b.add_theme_constant_override("separation", int(8 * u))
+	vb.add_child(g2b)
+	mkb.call(g2b, "b_ballista", func(): cmd("train", {"kind": "ballista"}), 318.0)
+	mkb.call(g2b, "b_catapult", func(): cmd("train", {"kind": "catapult"}), 318.0)
+	var g2c := HBoxContainer.new()
+	g2c.add_theme_constant_override("separation", int(8 * u))
+	vb.add_child(g2c)
+	mkb.call(g2c, "b_planks", func(): cmd("planks"), 318.0)
+	mkb.call(g2c, "b_ship", func(): cmd("ship"), 318.0)
 	var g3 := HBoxContainer.new()
 	g3.add_theme_constant_override("separation", int(8 * u))
 	vb.add_child(g3)
@@ -1824,7 +1981,7 @@ func _update_ui(force: bool) -> void:
 	var t := vteam()
 	var houses := count_slots(t, 1)
 	var res: Label = ui.res
-	res.text = LocS.t("GOLD %d    FOOD %d    POP %d/%d    VILLAGERS %d    LV %d" % [int(gold[t]), int(food[t]), pop_used[t], pop_cap(t), vill_n[t], level[t]])
+	res.text = LocS.t("GOLD %d    FOOD %d    WOOD %d    POP %d/%d    VILLAGERS %d    LV %d" % [int(gold[t]), int(food[t]), int(wood[t]), pop_used[t], pop_cap(t), vill_n[t], level[t]])
 	var bm: ProgressBar = ui.bar_me
 	var bf: ProgressBar = ui.bar_foe
 	bm.max_value = CASTLE_HP[level[t] - 1]
@@ -1889,6 +2046,17 @@ func _update_ui(force: bool) -> void:
 		if level[t] < inf[3]:
 			txt = "%s\nCastle Lv%d" % [pair[2], inf[3]]
 		set_b.call(pair[0], txt, barr_ok and level[t] >= inf[3] and gold[t] >= inf[0] and food[t] >= inf[1])
+	for pair2 in [["b_ballista", "ballista", "Ballista"], ["b_catapult", "catapult", "Catapult"]]:
+		var inf2: Array = TRAIN[pair2[1]]
+		var txt2: String = "%s\n%dg %df" % [pair2[2], inf2[0], inf2[1]]
+		if level[t] < inf2[3]:
+			txt2 = "%s\nCastle Lv%d" % [pair2[2], inf2[3]]
+		set_b.call(pair2[0], txt2, barr_ok and level[t] >= inf2[3] and gold[t] >= inf2[0] and food[t] >= inf2[1])
+	set_b.call("b_planks", "Buy Planks\n%d gold -> %d planks" % [PLANK_GOLD, PLANK_WOOD], gold[t] >= PLANK_GOLD)
+	if battle.sea:
+		set_b.call("b_ship", "Build Ship (%d/%d)\n%dg %d planks" % [ship_n[t], MAX_SHIPS, SHIP_GOLD, SHIP_WOOD], level[t] >= 2 and ship_n[t] < MAX_SHIPS and gold[t] >= SHIP_GOLD and wood[t] >= SHIP_WOOD)
+	else:
+		set_b.call("b_ship", "Ships\nIsland map only", false)
 	set_b.call("b_letter", "Write Letter\nsend a messenger", true)
 	var wb: Button = ui.b_war
 	var tbn: Button = ui.b_target
