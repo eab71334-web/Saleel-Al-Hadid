@@ -502,6 +502,57 @@ func _order_at(owner: int, mode: int, mask: int, pos: Vector3, gar: int) -> void
 		kingdom.on_march(owner)
 
 
+# ---- targeted attack from the war map: send N soldiers of each kind against one kingdom (target -2 = call everyone back)
+func strike(target: int, ns: int, na: int, nc: int) -> void:
+	if intro or over or kingdom == null:
+		return
+	if is_srv:
+		_strike(ctrl_owner(), target, ns, na, nc)
+	else:
+		strike_msg.rpc_id(1, target, ns, na, nc)
+
+
+@rpc("any_peer", "reliable")
+func strike_msg(target: int, ns: int, na: int, nc: int) -> void:
+	if is_srv:
+		_strike(multiplayer.get_remote_sender_id(), target, ns, na, nc)
+
+
+func _strike(owner: int, target: int, ns: int, na: int, nc: int) -> void:
+	var t: int = kingdom.team_of(owner)
+	if t < 0 or t >= nk or kingdom.fallen[t]:
+		return
+	if target == -2:
+		for u in by_team[t]:
+			u.strike_foe = -1
+		if not orders.has(owner):
+			orders[owner] = {}
+		for k in ["sword", "archer", "cav"]:
+			orders[owner][k] = {"mode": 2, "pos": kingdom.home_pos(t)}
+		return
+	if target == t or target < 0 or target >= nk or kingdom.fallen[target]:
+		return
+	if not kingdom.at_war(t, target):
+		kingdom._cmd(owner, "war", {"to": target})
+	if not kingdom.at_war(t, target):
+		return
+	var want := {"sword": ns, "archer": na, "cav": nc}
+	for k in want.keys():
+		var n: int = want[k]
+		# soldiers that are idle first, then those already on another campaign
+		for pass_i in 2:
+			for u in by_team[t]:
+				if n <= 0:
+					break
+				if u.dead or u.kind != k:
+					continue
+				if (pass_i == 0 and u.strike_foe >= 0) or (pass_i == 1 and u.strike_foe == target):
+					continue
+				u.strike_foe = target
+				n -= 1
+	kingdom.on_march(owner)
+
+
 func team_king(t: int):
 	for e in by_team[t]:
 		if not e.dead and e.kind == "hero":
@@ -582,6 +633,8 @@ func enemy_front(u) -> Vector3:
 		return t.position
 	if kingdom != null:
 		var ft := foe(u.team)
+		if u.strike_foe >= 0 and kingdom.castle_alive(u.strike_foe):
+			ft = u.strike_foe
 		if kingdom.castle_alive(ft):
 			var g: Vector3 = kingdom.gate_out(ft)
 			return g
