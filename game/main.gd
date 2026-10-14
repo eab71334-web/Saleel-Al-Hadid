@@ -14,7 +14,7 @@ var net
 var ui: Control
 var ui_layer: CanvasLayer
 var battle
-var cfg := {"sword": 40, "archer": 20, "cav": 10, "mode": "battle", "kingdoms": 2}
+var cfg := {"sword": 40, "archer": 20, "cav": 10, "mode": "battle", "kingdoms": 2, "map": "plains"}
 var _lobby_box: VBoxContainer
 var _hosts_box: VBoxContainer
 var _ip_edit: LineEdit
@@ -419,6 +419,11 @@ func _show_lobby(is_host: bool) -> void:
 				kl.text = LocS.t("Kingdoms: %d" % int(cfg.kingdoms)) if LocS.lang == "ar" else "Kingdoms: %d" % int(cfg.kingdoms)
 				_refresh_lobby())
 			vb.add_child(ks)
+			var maps := ["plains", "island", "desert", "snow"]
+			var mnames := {"plains": "Map: GREEN PLAINS (tap to change)", "island": "Map: ISLAND with seas and ships (tap to change)", "desert": "Map: DESERT (tap to change)", "snow": "Map: SNOW (tap to change)"}
+			_button(vb, mnames[String(cfg.get("map", "plains"))], func():
+				cfg.map = maps[(maps.find(String(cfg.get("map", "plains"))) + 1) % maps.size()]
+				_show_lobby(true))
 			_start_btn = _fbutton("START KINGDOM", func(): _start(), true)
 		else:
 			_slider(vb, "Swordsmen", "sword", 0, 80)
