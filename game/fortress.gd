@@ -77,6 +77,29 @@ func _build_fort(t: int) -> void:
 	_b(root, Vector3(72, 9, 3), stone, Vector3(0, 4.5, b * 48.0))
 	for i in 18:
 		_b(root, Vector3(2.2, 1.6, 3.3), stone, Vector3(-34 + i * 4.0, 9.8, b * 48.0), false)
+	# wall walk + two stairways (soldiers and ballistas climb them)
+	var wy: float = 6.8
+	var plank_m := _m(Color(0.5, 0.36, 0.2), 0.9)
+	for sg in [-1.0, 1.0]:
+		var wb := BoxMesh.new()
+		wb.size = Vector3(28.0, 0.5, 4.2)
+		battle._mesh(root, wb, plank_m, Vector3(sg * 20.0, wy - 0.25, b * 3.7), Vector3.ZERO, true)
+		for px in [-8.0, 0.0, 8.0]:
+			_b(root, Vector3(0.6, wy - 0.5, 0.6), wood, Vector3(sg * 20.0 + px, (wy - 0.5) * 0.5, b * 5.6), false)
+		var ang_r := atan2(wy, 20.0)
+		var rl := sqrt(20.0 * 20.0 + wy * wy)
+		var rb := BoxMesh.new()
+		rb.size = Vector3(3.6, 0.3, rl)
+		battle._mesh(root, rb, plank_m, Vector3(sg * 12.0, wy * 0.5 - 0.15, b * 14.0), Vector3(ang_r * b, 0, 0), true)
+		for i in 15:
+			var f2 := float(i) / 14.0
+			var sb := BoxMesh.new()
+			sb.size = Vector3(3.6, 0.14, 0.3)
+			battle._mesh(root, sb, wood, Vector3(sg * 12.0, wy * (1.0 - f2) + 0.02, b * (4.0 + 20.0 * f2)), Vector3.ZERO, false)
+		for rx in [-1.9, 1.9]:
+			var rr := BoxMesh.new()
+			rr.size = Vector3(0.12, 0.12, rl)
+			battle._mesh(root, rr, wood, Vector3(sg * 12.0 + rx, wy * 0.5 + 0.9, b * 14.0), Vector3(ang_r * b, 0, 0), false)
 	# towers (rear corners + mid sides)
 	for sx in [-36.0, 36.0]:
 		_c(root, 4.4, 4.6, 16.0, stone, Vector3(sx, 8, b * 48.0))
@@ -263,7 +286,7 @@ func _build_keep(t: int, root: Node3D, b: float, kz: float, tc: Color, stone: Ma
 	_b(root, Vector3(3.0, 0.06, 1.8), _m(Color(0.85, 0.78, 0.55), 0.9), Vector3(7.4, 1.03, kz - b * 1.6), false)
 	# sign boards above the entrance + back wall
 	var bd := Label3D.new()
-	bd.text = "THE ROYAL COURT"
+	bd.text = LocS.t("THE ROYAL COURT")
 	bd.font_size = 64
 	bd.pixel_size = 0.012
 	bd.outline_size = 14
@@ -354,7 +377,7 @@ func _make_npcs() -> void:
 		u.tyaw = u.rotation.y
 		npcs[k] = u
 		var lb := Label3D.new()
-		lb.text = defs[k][1]
+		lb.text = LocS.t(String(defs[k][1]))
 		lb.font_size = 54
 		lb.pixel_size = 0.0007
 		lb.fixed_size = true
