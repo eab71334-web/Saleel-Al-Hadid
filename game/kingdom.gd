@@ -28,6 +28,7 @@ const TREE_MAX := 80.0
 const TREES_PER_TEAM := 12
 const CASTLE_HP := [2500.0, 3600.0, 5200.0]
 const UPGRADE := [[150, 60], [320, 140]]
+const REPAIR_COST := 70
 const SLOT_LIMIT := [6, 9, 12]
 # kind: [gold, food, seconds, castle level needed]
 const TRAIN := {"sword": [30, 20, 4.0, 1], "archer": [40, 25, 5.0, 2], "cav": [90, 50, 7.0, 3]}
@@ -159,6 +160,8 @@ func foe_of(t: int) -> int:
 
 
 func target_castle(u) -> int:
+	if u.strike_foe >= 0 and u.strike_foe != u.team and battle.hostile(u.team, u.strike_foe) and castle_alive(u.strike_foe):
+		return u.strike_foe
 	var ft: int = battle.foe(u.team)
 	if ft >= 0 and ft != u.team and battle.hostile(u.team, ft) and castle_alive(ft):
 		return ft
@@ -239,6 +242,15 @@ func _solid(t: int, p: Vector3) -> bool:
 			return true
 		if d > 117.8:
 			return true
+	# houses and barracks are solid
+	if d > 76.0 and d < 100.0 and ax < 36.0 and t < plot_type.size():
+		for i in plot_type[t].size():
+			if int(plot_type[t][i]) == 0:
+				continue
+			var px: float = PLOT_LX[i % 6]
+			var pd: float = 72.0 + PLOT_LD[i / 6]
+			if absf(l.x - px) < 4.6 and absf(d - pd) < 3.8:
+				return true
 	if d > 71.4 and d < 74.6 and ax < 37.5:
 		if ax < GATE_HALF and gate_open[t]:
 			return false
@@ -265,8 +277,9 @@ func constrain(u, oldp: Vector3) -> void:
 				u.position = a
 			elif not _solid(t, b):
 				u.position = b
-			else:
+			elif not _solid(t, oldp):
 				u.position = oldp
+			# else: already inside a freshly built house - let it walk out
 
 
 # Next waypoint for a unit of team t that wants to reach `to` (goes through the gate).
@@ -743,6 +756,17 @@ func _cmd(owner: int, act: String, data: Dictionary) -> void:
 			level[t] += 1
 			castle_hp[t] += CASTLE_HP[level[t] - 1] - oldmax
 			ev_all("level", {"team": t, "lvl": level[t]})
+		"repair":
+			var mx: float = CASTLE_HP[level[t] - 1]
+			if gold[t] < REPAIR_COST:
+				if human: toast_team(t, "Not enough gold!")
+				return
+			if castle_hp[t] >= mx - 1.0:
+				if human: toast_team(t, "The walls are already sound.")
+				return
+			gold[t] -= REPAIR_COST
+			castle_hp[t] = minf(mx, castle_hp[t] + mx * 0.25)
+			battle.sfx.play_ui("hammer", -4.0) if t == my_team else null
 		"buyfood":
 			if gold[t] < BUY_GOLD:
 				if human: toast_team(t, "Not enough gold!")
@@ -1609,6 +1633,12 @@ func _build_ui() -> void:
 	ui["bar_me"] = mk_bar.call(cx - 262 * u, mine_col, "YOUR CASTLE")
 	ui["bar_foe"] = mk_bar.call(cx + 12 * u, battle.team_col(battle.foe(my_team)), "ENEMY CASTLE")
 	ui["bar_foe_lbl"] = ui["bar_foe"]
+	# the top castle bars are gone: castle health lives on the war map now
+	for bn in ["bar_me", "bar_foe"]:
+		ui[bn].visible = false
+	for ch in root.get_children():
+		if ch is Label and ch.position.y < 10 * u and ch.text in ["YOUR CASTLE", "ENEMY CASTLE"]:
+			ch.visible = false
 	# list of all kingdoms (top right)
 	var kl := VBoxContainer.new()
 	kl.position = Vector2(20 * u, 264 * u)
@@ -1638,7 +1668,8 @@ func _build_ui() -> void:
 	ui["status"] = st
 	# city panel
 	var panel := PanelContainer.new()
-	panel.position = Vector2(cx - 330 * u, 78 * u)
+	panel.position = Vector2(cx - 330 * u, 30 * u)
+	panel.z_index = 30
 	panel.visible = false
 	root.add_child(panel)
 	ui["panel"] = panel
@@ -1654,6 +1685,21 @@ func _build_ui() -> void:
 	close.custom_minimum_size = Vector2(60, 46) * u
 	close.pressed.connect(_toggle_panel)
 	head.add_child(close)
+	var stats := Label.new()
+	stats.add_theme_font_size_override("font_size", int(22 * u))
+	stats.add_theme_color_override("font_color", Color(0.85, 0.95, 0.8))
+	stats.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	stats.custom_minimum_size = Vector2(640, 0) * u
+	vb.add_child(stats)
+	ui["stats"] = stats
+	var hpbar := ProgressBar.new()
+	hpbar.show_percentage = false
+	hpbar.custom_minimum_size = Vector2(640, 18) * u
+	var hf := StyleBoxFlat.new()
+	hf.bg_color = Color(0.3, 0.8, 0.3)
+	hpbar.add_theme_stylebox_override("fill", hf)
+	vb.add_child(hpbar)
+	ui["hpbar"] = hpbar
 	var g1 := GridContainer.new()
 	g1.columns = 2
 	g1.add_theme_constant_override("h_separation", int(8 * u))
@@ -1671,8 +1717,7 @@ func _build_ui() -> void:
 	mkb.call(g1, "b_house", func(): cmd("house"), 318.0)
 	mkb.call(g1, "b_barr", func(): cmd("barracks"), 318.0)
 	mkb.call(g1, "b_up", func(): cmd("upgrade"), 318.0)
-	var sp := Control.new()
-	g1.add_child(sp)
+	mkb.call(g1, "b_repair", func(): cmd("repair"), 318.0)
 	_label(vb, "TRAIN SOLDIERS", int(20 * u), Color(0.8, 0.8, 0.85))
 	var g2 := HBoxContainer.new()
 	g2.add_theme_constant_override("separation", int(8 * u))
@@ -1826,6 +1871,12 @@ func _update_ui(force: bool) -> void:
 	set_b.call("b_house", "Build House (%d/%d)\n%d gold" % [used_slots(t), SLOT_LIMIT[level[t] - 1], HOUSE_COST], gold[t] >= HOUSE_COST and free_slot(t, HOUSE_ORDER) >= 0)
 	var maxb := 1 if level[t] < 3 else 2
 	set_b.call("b_barr", "Barracks (%d/%d)\n%d gold" % [count_slots(t, 2), maxb, BARRACKS_COST], gold[t] >= BARRACKS_COST and count_slots(t, 2) < maxb and free_slot(t, BARRACKS_ORDER) >= 0)
+	set_b.call("b_repair", "Repair Walls\n%d gold -> fixes a quarter" % REPAIR_COST, gold[t] >= REPAIR_COST and castle_hp[t] < CASTLE_HP[level[t] - 1] - 1.0)
+	var stl: Label = ui.stats
+	stl.text = LocS.t("Castle level %d   Soldiers %d   Houses %d   Villagers %d" % [level[t], soldier_n[t], count_slots(t, 1), vill_n[t]])
+	var hpb: ProgressBar = ui.hpbar
+	hpb.max_value = CASTLE_HP[level[t] - 1]
+	hpb.value = castle_hp[t]
 	if level[t] < 3:
 		var c: Array = UPGRADE[level[t] - 1]
 		set_b.call("b_up", "Develop Castle -> Lv%d\n%d gold, %d food" % [level[t] + 1, c[0], c[1]], gold[t] >= c[0] and food[t] >= c[1])
