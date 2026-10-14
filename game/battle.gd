@@ -15,7 +15,7 @@ const ADVANCE := 1
 const HOLD := 2
 const CHARGE := 3
 const RETREAT := 4
-const KIND_IDS := ["sword", "archer", "cav", "hero", "villager"]
+const KIND_IDS := ["sword", "archer", "cav", "hero", "villager", "ballista", "catapult", "ship"]
 const LocS := preload("res://game/loc.gd")
 const SettingsS := preload("res://game/settings.gd")
 const MODE_NAMES := ["Follow me", "Advance", "Hold here", "Charge!", "Retreat"]
@@ -82,6 +82,10 @@ var freeze_others := false
 var modal := false
 var cine := {}
 var garrison := {}
+var sea := false          # island map: water all around, ships can sail
+var coast_r := 140.0
+var map_kind := "plains"
+var orbit_t := 0.0
 var banner_tw: Tween = null
 
 
@@ -93,6 +97,9 @@ func _ready() -> void:
 	if String(cfg.get("mode", "battle")) == "kingdom":
 		nk = clampi(int(cfg.get("kingdoms", 2)), 2, 6)
 	ring_r = 73.0 if nk <= 4 else (78.0 if nk == 5 else 92.0)
+	map_kind = String(cfg.get("map", "plains"))
+	sea = map_kind == "island" and String(cfg.get("mode", "battle")) == "kingdom"
+	coast_r = ring_r + 62.0
 	by_team = []
 	castle_roots = []
 	for i in nk:
@@ -281,10 +288,30 @@ func _build_world() -> void:
 	cam.current = true
 	add_child(cam)
 
-	# ground
-	var pm := PlaneMesh.new()
-	pm.size = Vector2(500, 500)
-	_mesh(self, pm, _mat(Color(0.22, 0.4, 0.14), 1.0), Vector3.ZERO, Vector3.ZERO, false)
+	# ground (map kinds: plains / island / desert / snow)
+	var gcol := Color(0.22, 0.4, 0.14)
+	if map_kind == "desert":
+		gcol = Color(0.72, 0.58, 0.34)
+	elif map_kind == "snow":
+		gcol = Color(0.86, 0.9, 0.95)
+	if sea:
+		var disc := CylinderMesh.new()
+		disc.top_radius = coast_r
+		disc.bottom_radius = coast_r + 1.0
+		disc.height = 0.4
+		disc.radial_segments = 72
+		_mesh(self, disc, _mat(gcol, 1.0), Vector3(0, -0.2, 0), Vector3.ZERO, false)
+		var beach := CylinderMesh.new()
+		beach.top_radius = coast_r + 5.0
+		beach.bottom_radius = coast_r + 9.0
+		beach.height = 0.3
+		beach.radial_segments = 72
+		_mesh(self, beach, _mat(Color(0.8, 0.72, 0.5), 1.0), Vector3(0, -0.28, 0), Vector3.ZERO, false)
+		_build_sea()
+	else:
+		var pm := PlaneMesh.new()
+		pm.size = Vector2(500, 500)
+		_mesh(self, pm, _mat(gcol, 1.0), Vector3.ZERO, Vector3.ZERO, false)
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 42
 	var dirt := _mat(Color(0.38, 0.29, 0.18), 1.0)
@@ -298,10 +325,17 @@ func _build_world() -> void:
 	var cm1 := _cyl(0.0, 2.3, 4.5, 10)
 	var cm2 := _cyl(0.0, 1.7, 3.5, 10)
 	var placed := 0
-	while placed < 110:
+	while placed < (110 if (map_kind == "plains" or map_kind == "snow") else (22 if sea else 30)):
 		var x := rng.randf_range(-190, 190)
 		var z := rng.randf_range(-190, 190)
-		if nk > 2:
+		if sea:
+			var rr := rng.randf_range(10.0, maxf(ring_r - 26.0, 14.0))
+			var aa := rng.randf_range(0.0, TAU)
+			x = cos(aa) * rr
+			z = sin(aa) * rr
+		if sea:
+			pass
+		elif nk > 2:
 			if Vector2(x, z).length() < ring_r + 78.0:
 				continue
 		elif absf(x) < 108 and absf(z) < (140 if String(cfg.get("mode", "battle")) == "kingdom" else 96):
@@ -324,6 +358,170 @@ func _build_world() -> void:
 	# castles
 	for i in nk:
 		_castle(i)
+
+
+const SEA_SHADER := """
+shader_type spatial;
+render_mode cull_disabled;
+uniform vec4 deep : source_color = vec4(0.04, 0.22, 0.42, 1.0);
+uniform vec4 shallow : source_color = vec4(0.15, 0.55, 0.7, 1.0);
+varying float h;
+void vertex() {
+	h = sin(VERTEX.x * 0.09 + TIME * 1.2) * 0.25 + cos(VERTEX.z * 0.11 + TIME * 0.9) * 0.22;
+	VERTEX.y += h;
+}
+void fragment() {
+	float f = clamp(h * 1.3 + 0.5, 0.0, 1.0);
+	ALBEDO = mix(deep.rgb, shallow.rgb, f);
+	ROUGHNESS = 0.18;
+	METALLIC = 0.35;
+	SPECULAR = 0.8;
+}
+"""
+
+
+func _build_sea() -> void:
+	var sh := Shader.new()
+	sh.code = SEA_SHADER
+	var mat := ShaderMaterial.new()
+	mat.shader = sh
+	var pm := PlaneMesh.new()
+	pm.size = Vector2(1400, 1400)
+	pm.subdivide_width = 90
+	pm.subdivide_depth = 90
+	var mi := MeshInstance3D.new()
+	mi.mesh = pm
+	mi.material_override = mat
+	mi.position = Vector3(0, -0.45, 0)
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(mi)
+
+
+# ships stay on the water: pushed out of the island
+func keep_on_sea(p: Vector3) -> Vector3:
+	var f := Vector2(p.x, p.z)
+	var r := f.length()
+	var minr := coast_r + 6.0
+	if r < minr:
+		if r < 0.01:
+			f = Vector2(minr, 0)
+		else:
+			f = f / r * minr
+	elif r > coast_r + 110.0:
+		f = f / r * (coast_r + 110.0)
+	return Vector3(f.x, p.y, f.y)
+
+
+func shore_pos(p: Vector3) -> Vector3:
+	var f := Vector2(p.x, p.z)
+	if f.length() < 0.01:
+		return Vector3(coast_r - 8.0, 0, 0)
+	f = f.normalized() * (coast_r - 9.0)
+	return Vector3(f.x, 0, f.y)
+
+
+func siege_shot(u, to: Vector3) -> void:
+	var from: Vector3 = u.position + Vector3(0, 2.0, 0)
+	var dist := from.distance_to(to)
+	var style := 2 if u.kind == "catapult" else 1
+	_spawn_arrow(from, to, clampf(dist / 24.0, 0.5, 2.2), u.team, 0.0, false, style)
+	sfx.play("thud", from, -2.0)
+	if net.online:
+		arrow_fx.rpc(from, to, clampf(dist / 24.0, 0.5, 2.2), style)
+
+
+func ship_shot(u, to: Vector3, splash: float, tgt) -> void:
+	var from: Vector3 = u.position + Vector3(0, 2.0, 0)
+	var dist := from.distance_to(to)
+	var dur := clampf(dist / 26.0, 0.5, 2.0)
+	_spawn_arrow(from, to, dur, u.team, UnitS.KINDS.ship.dmg if splash > 0.0 else 0.0, splash > 0.0, 3, 3.5)
+	sfx.play("thud", from, 2.0, 0.7)
+	_burst(from + Vector3(0, 0.5, 0), Color(0.9, 0.9, 0.9), 10, 3.0, false)
+	if net.online:
+		arrow_fx.rpc(from, to, dur, 3)
+
+
+# ---- ships: boarding and map control (host executes)
+func board(owner_hint := -1) -> void:
+	if is_srv:
+		_board(ctrl_owner())
+	else:
+		board_msg.rpc_id(1)
+
+
+@rpc("any_peer", "reliable")
+func board_msg() -> void:
+	if is_srv:
+		_board(multiplayer.get_remote_sender_id())
+
+
+func _board(owner: int) -> void:
+	var h = heroes.get(owner)
+	if h == null or not is_instance_valid(h) or h.dead:
+		return
+	if h.aboard != null:
+		var sp: Vector3 = h.aboard.position
+		if Vector2(sp.x, sp.z).length() > coast_r + 18.0:
+			if owner == ctrl_owner():
+				_toast("Sail closer to the shore to step off.", 2.5)
+			return
+		h.aboard.pilot_in = Vector3.ZERO
+		h.aboard = null
+		h.position = shore_pos(h.position)
+		return
+	var best = null
+	var bd := 16.0
+	for e in by_team[h.team]:
+		if e.kind == "ship" and not e.dead and e.pilot_in.length() < 0.01:
+			var d: float = e.position.distance_to(h.position)
+			if d < bd:
+				bd = d
+				best = e
+	if best != null:
+		h.aboard = best
+		best.pilot_in = Vector3.ZERO
+
+
+func ship_go(pos: Vector3) -> void:
+	if is_srv:
+		_ship_go(ctrl_owner(), pos)
+	else:
+		ship_go_msg.rpc_id(1, pos.x, pos.z)
+
+
+@rpc("any_peer", "reliable")
+func ship_go_msg(x: float, z: float) -> void:
+	if is_srv:
+		_ship_go(multiplayer.get_remote_sender_id(), Vector3(x, 0, z))
+
+
+func _ship_go(owner: int, pos: Vector3) -> void:
+	if kingdom == null:
+		return
+	var t: int = kingdom.team_of(owner)
+	pos = keep_on_sea(pos)
+	for e in by_team[t]:
+		if e.kind == "ship" and not e.dead:
+			e.dest = pos
+			e.has_dest = true
+
+
+# the king is on a ship (any peer, from the synced flag)
+func my_hero_aboard() -> bool:
+	var h = heroes.get(my_id)
+	return h != null and is_instance_valid(h) and (h.sailing or h.aboard != null)
+
+
+func near_my_ship() -> bool:
+	var h = heroes.get(my_id)
+	if h == null or not is_instance_valid(h) or h.dead:
+		return false
+	if h.sailing or h.aboard != null:
+		return true
+	for e in by_team[h.team]:
+		if e.kind == "ship" and not e.dead and e.position.distance_to(h.position) < 16.0:
+			return true
+	return false
 
 
 func _castle(team: int) -> void:
@@ -503,22 +701,22 @@ func _order_at(owner: int, mode: int, mask: int, pos: Vector3, gar: int) -> void
 
 
 # ---- targeted attack from the war map: send N soldiers of each kind against one kingdom (target -2 = call everyone back)
-func strike(target: int, ns: int, na: int, nc: int) -> void:
+func strike(target: int, ns: int, na: int, nc: int, nb := 0, ncat := 0) -> void:
 	if intro or over or kingdom == null:
 		return
 	if is_srv:
-		_strike(ctrl_owner(), target, ns, na, nc)
+		_strike(ctrl_owner(), target, ns, na, nc, nb, ncat)
 	else:
-		strike_msg.rpc_id(1, target, ns, na, nc)
+		strike_msg.rpc_id(1, target, ns, na, nc, nb, ncat)
 
 
 @rpc("any_peer", "reliable")
-func strike_msg(target: int, ns: int, na: int, nc: int) -> void:
+func strike_msg(target: int, ns: int, na: int, nc: int, nb: int, ncat: int) -> void:
 	if is_srv:
-		_strike(multiplayer.get_remote_sender_id(), target, ns, na, nc)
+		_strike(multiplayer.get_remote_sender_id(), target, ns, na, nc, nb, ncat)
 
 
-func _strike(owner: int, target: int, ns: int, na: int, nc: int) -> void:
+func _strike(owner: int, target: int, ns: int, na: int, nc: int, nb := 0, ncat := 0) -> void:
 	var t: int = kingdom.team_of(owner)
 	if t < 0 or t >= nk or kingdom.fallen[t]:
 		return
@@ -536,7 +734,7 @@ func _strike(owner: int, target: int, ns: int, na: int, nc: int) -> void:
 		kingdom._cmd(owner, "war", {"to": target})
 	if not kingdom.at_war(t, target):
 		return
-	var want := {"sword": ns, "archer": na, "cav": nc}
+	var want := {"sword": ns, "archer": na, "cav": nc, "ballista": nb, "catapult": ncat}
 	for k in want.keys():
 		var n: int = want[k]
 		# soldiers that are idle first, then those already on another campaign
@@ -584,7 +782,7 @@ func nearest_enemy(u, r: float):
 		if not hostile(u.team, ti):
 			continue
 		for e in by_team[ti]:
-			if e.dead or e.kind == "villager":
+			if e.dead or e.kind == "villager" or (not u.ranged and (e.kind == "ship" or (e.kind == "hero" and e.aboard != null))):
 				continue
 			var d: float = u.position.distance_squared_to(e.position)
 			if d < bd:
@@ -611,7 +809,7 @@ func pick_target(u):
 		if not hostile(u.team, ti):
 			continue
 		for e in by_team[ti]:
-			if e.dead or e.kind == "villager":
+			if e.dead or e.kind == "villager" or (not u.ranged and (e.kind == "ship" or (e.kind == "hero" and e.aboard != null))):
 				continue
 			var d: float = u.position.distance_squared_to(e.position)
 			var s := d
@@ -740,15 +938,24 @@ func fire_arrow(u, t) -> void:
 	var dur := clampf(dist / 28.0, 0.35, 1.6)
 	var tf := Vector3(sin(t.rotation.y), 0, cos(t.rotation.y))
 	var to: Vector3 = t.position + tf * t.sim_speed * dur * 0.8 + Vector3(0, 1.0, 0)
-	var dmg: float = UnitS.KINDS.archer.dmg * (1.35 if u.buff_t > 0.0 else 1.0)
-	_spawn_arrow(from, to, dur, u.team, dmg, true)
-	sfx.play("twang", from, -8.0)
+	var dmg: float = UnitS.KINDS[u.kind].dmg * (1.35 if u.buff_t > 0.0 else 1.0)
+	var style := 0
+	var spl := 0.0
+	if u.kind == "ballista":
+		style = 1
+	elif u.kind == "catapult":
+		style = 2
+		spl = 4.0
+	_spawn_arrow(from, to, dur, u.team, dmg, true, style, spl)
+	sfx.play("twang" if style == 0 else "thud", from, -8.0 if style == 0 else -2.0)
 	if net.online:
-		arrow_fx.rpc(from, to, dur)
+		arrow_fx.rpc(from, to, dur, style)
 
 
-func _spawn_arrow(from: Vector3, to: Vector3, dur: float, team: int, dmg: float, live: bool) -> void:
+func _spawn_arrow(from: Vector3, to: Vector3, dur: float, team: int, dmg: float, live: bool, style := 0, splash := 0.0) -> void:
 	var a = ArrowS.new()
+	a.style = style
+	a.splash = splash
 	a.battle = self
 	a.from_p = from
 	a.to_p = to
@@ -760,6 +967,19 @@ func _spawn_arrow(from: Vector3, to: Vector3, dur: float, team: int, dmg: float,
 
 
 func arrow_land(a) -> void:
+	if a.splash > 0.0:
+		for ti in nk:
+			if not hostile(a.team, ti):
+				continue
+			for e in by_team[ti]:
+				if e.dead or e.kind == "villager":
+					continue
+				if Vector2(e.position.x - a.to_p.x, e.position.z - a.to_p.z).length() < a.splash:
+					e.take_damage(a.dmg)
+		_fx(4, a.to_p)
+		if net.online:
+			fx.rpc(4, a.to_p)
+		return
 	var best = null
 	var bd := 2.0
 	for ti in nk:
@@ -781,6 +1001,12 @@ func arrow_land(a) -> void:
 
 
 func on_death(u) -> void:
+	if u.kind == "ship":
+		for h in heroes.values():
+			if is_instance_valid(h) and h.aboard == u:
+				h.aboard = null
+				h.position = shore_pos(u.position)
+				h.take_damage(30.0)
 	var p: Vector3 = u.position + Vector3(0, 1.0, 0)
 	_fx(2, p)
 	if net.online:
@@ -821,11 +1047,12 @@ func snap(d: PackedFloat64Array) -> void:
 		if u == null:
 			u = _make_unit(KIND_IDS[int(d[o + 1])], int(d[o + 2]), int(d[o + 3]), Vector3(d[o + 4], 0, d[o + 5]), id)
 			u.rotation.y = d[o + 6]
-		u.tpos = Vector3(d[o + 4], 0, d[o + 5])
+		var fl := int(d[o + 8])
+		u.tpos = Vector3(d[o + 4], float((fl >> 4) & 255) / 8.0, d[o + 5])
 		u.tyaw = d[o + 6]
 		u.hp = d[o + 7]
 		u.last_seen = game_time
-		var fl := int(d[o + 8])
+		u.sailing = (fl & 8) != 0
 		var m := (fl & 2) != 0
 		if m != u.mounted:
 			u.set_mounted(m)
@@ -843,8 +1070,8 @@ func fx(kind: int, p: Vector3) -> void:
 
 
 @rpc("authority", "unreliable")
-func arrow_fx(a: Vector3, b: Vector3, dur: float) -> void:
-	_spawn_arrow(a, b, dur, 0, 0.0, false)
+func arrow_fx(a: Vector3, b: Vector3, dur: float, style := 0) -> void:
+	_spawn_arrow(a, b, dur, 0, 0.0, false, style)
 	sfx.play("twang", a, -8.0)
 
 
@@ -1034,7 +1261,7 @@ func _send_snap() -> void:
 	var d := PackedFloat64Array()
 	var n := 0
 	for u in units.values():
-		var fl := (1 if u.swing > 0.6 else 0) | (2 if u.mounted else 0) | (4 if u.carry > 0 else 0)
+		var fl := (1 if u.swing > 0.6 else 0) | (2 if u.mounted else 0) | (4 if u.carry > 0 else 0) | (8 if u.aboard != null else 0) | (int(clampf(u.position.y, 0.0, 31.0) * 8.0) << 4)
 		d.append_array(PackedFloat64Array([u.uid, KIND_IDS.find(u.kind), u.team, u.owner_id, u.position.x, u.position.z, u.rotation.y, u.hp, fl]))
 		n += 1
 		if n >= 12:
@@ -1196,6 +1423,7 @@ func _intro_step(t: float) -> void:
 func _intro_done() -> void:
 	intro = false
 	running = true
+	orbit_t = 6.2
 	var tb := create_tween()
 	tb.tween_property(hud.bar_top, "size:y", 0.0, 0.6)
 	tb.parallel().tween_property(hud.bar_bot, "size:y", 0.0, 0.6)
@@ -1498,6 +1726,7 @@ func _unhandled_input(e: InputEvent) -> void:
 			KEY_5: _order(RETREAT)
 		return
 	if e is InputEventMouseMotion and (e.button_mask & MOUSE_BUTTON_MASK_RIGHT) != 0:
+		orbit_t = 0.0
 		cam_yaw -= e.relative.x * 0.005
 		cam_pitch = clampf(cam_pitch + e.relative.y * 0.004, 0.12, 1.2)
 		return
@@ -1523,6 +1752,7 @@ func _unhandled_input(e: InputEvent) -> void:
 		if e.index == stick_id:
 			stick_vec = ((e.position - stick_origin) / (80.0 * ui_u)).limit_length(1.0)
 		elif e.index == look_id:
+			orbit_t = 0.0
 			cam_yaw -= e.relative.x * 0.006
 			cam_pitch = clampf(cam_pitch + e.relative.y * 0.004, 0.12, 1.2)
 
@@ -1627,6 +1857,10 @@ func _update_camera(dt: float, h) -> void:
 		if h == null:
 			spec_pos = kingdom.home_pos(kingdom.vteam())
 	var alive: bool = h != null and is_instance_valid(h) and not h.dead
+	if orbit_t > 0.0:
+		orbit_t -= dt
+		cam_yaw += TAU / 6.0 * dt
+		cam_pitch = lerpf(cam_pitch, 0.3, clampf(dt * 2.0, 0.0, 1.0))
 	if alive:
 		cam_focus = cam_focus.lerp(h.position, clampf(dt * 9.0, 0.0, 1.0))
 	else:
