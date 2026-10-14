@@ -123,6 +123,9 @@ func _process(dt: float) -> void:
 
 # ================================================================== map coordinates
 func extents() -> Vector2:
+	if battle.sea:
+		var es: float = battle.coast_r + 60.0
+		return Vector2(es, es)
 	if battle.nk > 2:
 		var e: float = battle.ring_r + 55.0
 		return Vector2(e, e)
@@ -348,7 +351,7 @@ func open() -> void:
 	zoom = 1.0
 	center = Vector2.ZERO
 	var n := enemy_sightings().size()
-	info.text = "Tap an enemy castle to plan an attack. Pinch to zoom." if n == 0 else "Enemy soldiers in sight: %d" % n
+	info.text = ("Tap an enemy castle to attack, or tap the sea to sail your ships. Pinch to zoom." if battle.sea else "Tap an enemy castle to plan an attack. Pinch to zoom.") if n == 0 else "Enemy soldiers in sight: %d" % n
 	map.queue_redraw()
 
 
@@ -443,6 +446,12 @@ func _tap(pos: Vector2) -> void:
 	if ct >= 0 and ct != vt and not kingdom.fallen[ct] and not station_mode:
 		atk.open(ct)
 		return
+	if battle.sea and not station_mode:
+		var wsea := m2w(pos)
+		if Vector2(wsea.x, wsea.z).length() > battle.coast_r:
+			battle.ship_go(wsea)
+			info.text = "Your ships sail to that spot."
+			return
 	if not station_mode:
 		info.text = "Tap an enemy castle to plan an attack. Pinch to zoom."
 		return
@@ -462,7 +471,10 @@ func _draw_map() -> void:
 	var k := _k()
 	var f := ThemeDB.fallback_font
 	# parchment-dark base = unexplored fog
-	map.draw_rect(Rect2(Vector2.ZERO, sz), Color(0.05, 0.06, 0.08))
+	map.draw_rect(Rect2(Vector2.ZERO, sz), Color(0.04, 0.09, 0.16) if battle.sea else Color(0.05, 0.06, 0.08))
+	if battle.sea:
+		map.draw_circle(w2m(Vector3.ZERO), float(battle.coast_r) * k, Color(0.09, 0.14, 0.09))
+		map.draw_arc(w2m(Vector3.ZERO), float(battle.coast_r) * k, 0, TAU, 96, Color(0.8, 0.72, 0.5, 0.6), 3.0)
 	# terrain around the kingdoms (faint grid, visible everywhere)
 	var ex := extents()
 	var step := 20.0
@@ -582,6 +594,13 @@ func _draw_map() -> void:
 		elif u.kind == "villager":
 			if u.team == t and zoom > 1.5:
 				map.draw_circle(p, ds * 0.6, Color(0.8, 0.8, 0.6))
+		elif u.kind == "ship":
+			var hd := Vector2(sin(u.rotation.y), -cos(u.rotation.y))
+			var sd := Vector2(-hd.y, hd.x)
+			map.draw_colored_polygon(PackedVector2Array([p + hd * ds * 3.2, p + sd * ds * 1.4 - hd * ds * 2.2, p - sd * ds * 1.4 - hd * ds * 2.2]), c)
+			map.draw_arc(p, ds * 3.6, 0, TAU, 16, Color(1, 1, 1, 0.8), 2.0)
+		elif u.kind == "ballista" or u.kind == "catapult":
+			map.draw_colored_polygon(PackedVector2Array([p + Vector2(0, -ds * 1.6), p + Vector2(ds * 1.6, 0), p + Vector2(0, ds * 1.6), p + Vector2(-ds * 1.6, 0)]), c)
 		elif u.kind == "archer":
 			map.draw_rect(Rect2(p - Vector2(ds, ds) * 0.8, Vector2(ds, ds) * 1.6), c)
 		elif u.kind == "cav":
