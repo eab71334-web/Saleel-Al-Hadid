@@ -24,6 +24,7 @@ var last_error := ""
 var max_players := 4
 var started := false
 var room_name := ""
+var port := PORT
 
 
 func _ready() -> void:
@@ -43,9 +44,30 @@ func start_solo() -> void:
 	players = {1: {"name": my_name, "idx": 0}}
 
 
+func _close_peer() -> void:
+	var old := multiplayer.multiplayer_peer
+	if old != null and not (old is OfflineMultiplayerPeer):
+		old.close()
+	multiplayer.multiplayer_peer = OfflineMultiplayerPeer.new()
+
+
 func host_game() -> bool:
-	var p := ENetMultiplayerPeer.new()
-	if p.create_server(PORT, 8) != OK:
+	# free anything left over from an earlier room (this was the "port busy" bug)
+	_close_peer()
+	if _bcast:
+		_bcast.close()
+		_bcast = null
+	stop_listening()
+	var p: ENetMultiplayerPeer = null
+	var ok := false
+	for i in 8:   # if the port is really taken by someone else, try the next ones
+		p = ENetMultiplayerPeer.new()
+		if p.create_server(PORT + i * 2, 8) == OK:
+			port = PORT + i * 2
+			ok = true
+			break
+	if not ok:
+		last_error = "port"
 		return false
 	multiplayer.multiplayer_peer = p
 	is_host = true
@@ -58,14 +80,15 @@ func host_game() -> bool:
 	return true
 
 
-func join_game(ip: String) -> bool:
+func join_game(ip: String, prt := PORT) -> bool:
 	var addr := ip.strip_edges()
+	_close_peer()
 	last_error = ""
 	if not addr.is_valid_ip_address():
 		last_error = "bad_ip"
 		return false
 	var p := ENetMultiplayerPeer.new()
-	if p.create_client(addr, PORT) != OK:
+	if p.create_client(addr, prt) != OK:
 		last_error = "bad_ip"
 		return false
 	multiplayer.multiplayer_peer = p
@@ -92,8 +115,10 @@ func stop_listening() -> void:
 
 func leave() -> void:
 	stop_listening()
+	if _bcast:
+		_bcast.close()
 	_bcast = null
-	multiplayer.multiplayer_peer = OfflineMultiplayerPeer.new()
+	_close_peer()
 	online = false
 	is_host = false
 	players.clear()
@@ -136,7 +161,7 @@ func _process(dt: float) -> void:
 		_t = 0.0
 		for target in _bcast_targets():
 			_bcast.set_dest_address(target, DISC)
-			_bcast.put_packet(("MW|%s|%d|%d|%d" % [my_name, players.size(), max_players, 1 if started else 0]).to_utf8_buffer())
+			_bcast.put_packet(("MW|%s|%d|%d|%d|%d" % [my_name, players.size(), max_players, 1 if started else 0, port]).to_utf8_buffer())
 	if _listen:
 		var changed := false
 		while _listen.get_available_packet_count() > 0:
@@ -147,11 +172,20 @@ func _process(dt: float) -> void:
 				var cnt := 1
 				var mx := 4
 				var st := false
+				var hp := PORT
+				if parts.size() >= 6:
+					hp = int(parts[5])
 				if parts.size() >= 5:
 					cnt = int(parts[2])
 					mx = int(parts[3])
 					st = parts[4] == "1"
-				hosts[ip] = {"name": parts[1] if parts.size() > 1 else "?", "count": cnt, "max": mx, "started": st, "t": Time.get_ticks_msec()}
+				hosts[ip] = {"name": parts[1] if parts.size() > 1 else "?", "count": cnt, "max": mx, "started": st, "port": hp, "t": Time.get_ticks_msec()}
+				changed = true
+		# forget rooms that stopped announcing
+		var now := Time.get_ticks_msec()
+		for k in hosts.keys():
+			if now - int(hosts[k].t) > 4500:
+				hosts.erase(k)
 				changed = true
 		if changed:
 			hosts_changed.emit()
