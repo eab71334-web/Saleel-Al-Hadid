@@ -29,6 +29,7 @@ var uid := 0
 var kind := "sword"
 var team := 0
 var owner_id := 0
+var strike_foe := -1     # kingdom this soldier was sent against from the war map
 var hp := 100.0
 var max_hp := 100.0
 var mounted := false
@@ -656,6 +657,11 @@ func _ai() -> void:
 	var ord: Dictionary = battle.get_order(owner_id, okind)
 	if battle.kingdom != null and kind != "hero" and battle.is_garrison(self):
 		ord = {"mode": M_HOLD, "pos": battle.kingdom.home_pos(team)}
+	if strike_foe >= 0 and kind != "hero" and battle.kingdom != null:
+		if battle.kingdom.castle_alive(strike_foe) and battle.hostile(team, strike_foe):
+			ord = {"mode": M_ADVANCE, "pos": ord.pos}
+		else:
+			strike_foe = -1
 	if battle.kingdom != null and battle.war and target != null and kind != "archer" and kind != "hero" \
 			and battle.kingdom.inside(target.team, target.position) and battle.kingdom.castle_alive(target.team):
 		target = null
