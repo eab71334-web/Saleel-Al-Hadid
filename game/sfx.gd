@@ -6,6 +6,8 @@ var lib := {}
 var pool: Array = []
 var ui: AudioStreamPlayer
 var music: AudioStreamPlayer
+var _th: Thread
+const MusicS := preload("res://game/music.gd")
 
 
 func _ready() -> void:
@@ -23,6 +25,35 @@ func _ready() -> void:
 	music.volume_db = -11.0
 	add_child(music)
 	music.play()
+	# epic score is composed on a thread, then fades in over the ambient loop
+	_th = Thread.new()
+	_th.start(func():
+		var calm = MusicS.compose(92.0, 0.35)
+		var hard = MusicS.compose(124.0, 1.0)
+		_ready_music.call_deferred(calm, hard))
+
+
+func _ready_music(calm, hard) -> void:
+	lib["epic"] = calm
+	lib["epic_attack"] = hard
+	if _th != null:
+		_th.wait_to_finish()
+		_th = null
+	set_theme("epic")
+
+
+# switch the background score: "epic" (calm war), "epic_attack" (charge!)
+func set_theme(nm: String) -> void:
+	if not lib.has(nm) or music == null:
+		return
+	if music.stream == lib[nm] and music.playing:
+		return
+	var vol := music.volume_db
+	music.stream = lib[nm]
+	music.volume_db = -40.0
+	music.play()
+	var tw := create_tween()
+	tw.tween_property(music, "volume_db", -9.0 if nm == "epic" else -5.0, 1.8)
 
 
 func play(sound: String, pos: Vector3, vol := 0.0, pitch := 1.0) -> void:
@@ -118,3 +149,9 @@ func _build_lib() -> void:
 		var drum := amp * sin(tau * 52.0 * tt) * exp(-tt * 9.0)
 		return clampf(drone + pad + drum, -1.0, 1.0)
 	, true)
+
+
+func _exit_tree() -> void:
+	if _th != null:
+		_th.wait_to_finish()
+		_th = null
