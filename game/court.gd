@@ -53,10 +53,14 @@ func build_ui(r: Control, u: float, vs: Vector2) -> void:
 		b.pressed.connect(cb)
 		root.add_child(b)
 		return b
-	mk.call("MAP", Vector2(180, 122), func(): mapv.toggle())
-	mk.call("ADVISOR", Vector2(340, 122), func(): toggle())
-	mk.call("ROYAL", Vector2(500, 122), func(): toggle_royal())
+	var mb: Button = mk.call("MAP", Vector2(180, 122), func(): mapv.toggle())
+	kingdom.style_btn(mb, Color(0.3, 0.6, 1.0), u)
+	var ab: Button = mk.call("ADVISOR", Vector2(340, 122), func(): toggle())
+	kingdom.style_btn(ab, Color(0.7, 0.45, 0.95), u)
+	var rb: Button = mk.call("ROYAL", Vector2(500, 122), func(): toggle_royal())
+	kingdom.style_btn(rb, Color(1.0, 0.78, 0.25), u)
 	talk_btn = mk.call("TALK", Vector2(20, 186), func(): _talk())
+	kingdom.style_btn(talk_btn, Color(0.95, 0.35, 0.3), u)
 	talk_btn.size = Vector2(190, 62) * u
 	talk_btn.visible = false
 	_build_royal(u, vs)
@@ -575,6 +579,8 @@ func _update_talk() -> void:
 				talk_kind = "advisor"
 			elif h.position.distance_to(kingdom.fortress.throne_pos[kingdom.vteam()]) < 6.0:
 				talk_kind = "throne"
+	if talk_kind == "" and battle.sea and battle.near_my_ship():
+		talk_kind = "ship"
 	talk_btn.visible = talk_kind != ""
 	if talk_kind == "messenger":
 		talk_btn.text = LocS.t("TALK: MESSENGER")
@@ -582,6 +588,8 @@ func _update_talk() -> void:
 		talk_btn.text = LocS.t("TALK: ADVISOR")
 	elif talk_kind == "throne":
 		talk_btn.text = LocS.t("SIT ON THRONE")
+	elif talk_kind == "ship":
+		talk_btn.text = LocS.t("LEAVE SHIP" if battle.my_hero_aboard() else "BOARD SHIP")
 
 
 func _talk() -> void:
@@ -591,3 +599,5 @@ func _talk() -> void:
 		kingdom._show_compose("")
 	elif talk_kind == "throne":
 		toggle_royal()
+	elif talk_kind == "ship":
+		battle.board()
