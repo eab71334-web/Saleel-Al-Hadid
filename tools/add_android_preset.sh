@@ -39,5 +39,8 @@ package/unique_name="com.towerwars.medievalwars"
 package/name="Medieval Wars"
 package/signed=true
 screen/immersive_mode=true
+permissions/internet=true
+permissions/read_external_storage=true
+permissions/read_media_images=true
 PRESET
 echo "Added Android preset as preset.$N"

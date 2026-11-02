@@ -16,6 +16,7 @@ var sliders := {}
 var vals := {}
 var lbls := {}
 var confirm: Button
+var grp_btn: Button
 var face: Control
 var _type_txt := ""
 var _type_i := 0.0
@@ -126,6 +127,12 @@ func build(u: float, vs: Vector2) -> void:
 	confirm.add_theme_font_size_override("font_size", int(30 * u))
 	confirm.pressed.connect(_confirm)
 	fr.add_child(confirm)
+	grp_btn = Button.new()
+	grp_btn.text = "SEND SELECTED GROUPS"
+	grp_btn.custom_minimum_size = Vector2(300, 74) * u
+	grp_btn.add_theme_font_size_override("font_size", int(22 * u))
+	grp_btn.pressed.connect(_confirm_groups)
+	fr.add_child(grp_btn)
 	var cn := Button.new()
 	cn.text = "CANCEL"
 	cn.custom_minimum_size = Vector2(170, 74) * u
@@ -138,8 +145,29 @@ func _preset(f: float) -> void:
 		sliders[k].value = roundi(float(_avail.get(k, 0)) * f)
 
 
+func _confirm_groups() -> void:
+	if mapv.gsel == 0:
+		return
+	grp_btn.disabled = true
+	var ar: bool = LocS.lang == "ar"
+	var nm: String = LocS.t(battle.team_name(target)) if ar else battle.team_name(target)
+	_say(("الهجوم بالمجموعات المختارة على قلعة %s!" % nm) if ar else "The chosen groups march on the castle of %s!" % nm)
+	battle.strike_groups(target, mapv.gsel)
+	battle.sfx.play_ui("horn", 2.0)
+	battle.sfx.set_theme("epic_attack")
+	battle.banner(("الهجوم على %s" % nm) if ar else "ATTACK ON %s" % nm.to_upper(), battle.team_col(target), 3.0)
+	get_tree().create_timer(60.0).timeout.connect(func():
+		if battle != null and is_instance_valid(battle) and battle.sfx != null:
+			battle.sfx.set_theme("epic"))
+	get_tree().create_timer(2.0).timeout.connect(func():
+		close()
+		mapv.close())
+
+
 func open(tt: int) -> void:
 	target = tt
+	grp_btn.visible = mapv.gsel != 0
+	grp_btn.disabled = false
 	var vt: int = kingdom.vteam()
 	_avail = {"sword": 0, "archer": 0, "cav": 0, "ballista": 0, "catapult": 0}
 	for u in battle.by_team[vt]:

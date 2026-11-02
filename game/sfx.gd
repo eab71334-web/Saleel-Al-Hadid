@@ -6,7 +6,8 @@ var lib := {}
 var pool: Array = []
 var ui: AudioStreamPlayer
 var music: AudioStreamPlayer
-var _th: Thread
+var amb: AudioStreamPlayer
+var _amb_want := ""
 const MusicS := preload("res://game/music.gd")
 
 
@@ -25,21 +26,46 @@ func _ready() -> void:
 	music.volume_db = -11.0
 	add_child(music)
 	music.play()
-	# epic score is composed on a thread, then fades in over the ambient loop
-	_th = Thread.new()
-	_th.start(func():
-		var calm = MusicS.compose(92.0, 0.35)
-		var hard = MusicS.compose(124.0, 1.0)
-		_ready_music.call_deferred(calm, hard))
+	# epic score is composed ONCE on a static thread (never tied to this node,
+	# so leaving a battle can't leave a thread pointing at a freed object)
+	if _score.is_empty():
+		if _th_s == null:
+			_th_s = Thread.new()
+			_th_s.start(_compose_job)
+		set_process(true)
+	else:
+		_ready_music(_score["calm"], _score["hard"], _score["extra"])
 
 
-func _ready_music(calm, hard) -> void:
+static var _score := {}
+static var _th_s: Thread = null
+static var _done := false
+
+
+static func _compose_job() -> void:
+	var calm = MusicS.compose(92.0, 0.35)
+	var hard = MusicS.compose(124.0, 1.0)
+	var inst: Node = load("res://game/sfx.gd").new()
+	var ex: Dictionary = inst._extra_lib()
+	inst.free()
+	_score = {"calm": calm, "hard": hard, "extra": ex}
+	_done = true
+
+
+func _process(_d: float) -> void:
+	if _done and not _score.is_empty():
+		set_process(false)
+		_ready_music(_score["calm"], _score["hard"], _score["extra"])
+
+
+func _ready_music(calm, hard, extra) -> void:
+	for k in extra.keys():
+		lib[k] = extra[k]
 	lib["epic"] = calm
 	lib["epic_attack"] = hard
-	if _th != null:
-		_th.wait_to_finish()
-		_th = null
 	set_theme("epic")
+	if _amb_want != "":
+		set_ambient(_amb_want)
 
 
 # switch the background score: "epic" (calm war), "epic_attack" (charge!)
@@ -151,7 +177,108 @@ func _build_lib() -> void:
 	, true)
 
 
-func _exit_tree() -> void:
-	if _th != null:
-		_th.wait_to_finish()
-		_th = null
+# ambient bed: "town" (wind, birds, distant hammering) or "field" (wind, crows). Starts as soon as the sounds exist.
+func set_ambient(kind: String) -> void:
+	_amb_want = kind
+	var nm := "amb_" + kind
+	if not lib.has(nm):
+		return
+	if amb == null:
+		amb = AudioStreamPlayer.new()
+		amb.volume_db = -24.0
+		add_child(amb)
+	if amb.stream == lib[nm] and amb.playing:
+		return
+	amb.stream = lib[nm]
+	amb.play()
+
+
+func _brass(t: float, f: float, dur: float, amp := 1.0) -> float:
+	if t < 0.0 or t > dur:
+		return 0.0
+	var env: float = minf(t / 0.09, 1.0) * clampf((dur - t) / 0.35, 0.0, 1.0)
+	var s := 0.0
+	for k in range(1, 7):
+		s += sin(TAU * f * k * t + 0.4 * k) / float(k)
+	return 0.28 * amp * s * env * (1.0 + 0.04 * sin(TAU * 5.5 * t))
+
+
+func _extra_lib() -> Dictionary:
+	var out := {}
+	var tau := TAU
+	# victory fanfare: rising brass triad and a held chord
+	out["fanfare"] = _gen(3.4, func(t):
+		var v: float = _brass(t, 392.0, 0.45) + _brass(t - 0.45, 392.0, 0.3) + _brass(t - 0.75, 523.0, 0.5) + _brass(t - 1.25, 659.0, 0.5)
+		v += _brass(t - 1.75, 784.0, 1.6, 1.0) + _brass(t - 1.75, 659.0, 1.6, 0.7) + _brass(t - 1.75, 523.0, 1.6, 0.7) + _brass(t - 1.75, 196.0, 1.6, 0.8)
+		v += 0.4 * sin(tau * 60.0 * t) * exp(-fmod(t, 0.9) * 8.0) * (1.0 if t > 1.7 else 0.0)
+		return clampf(v * 0.6, -1.0, 1.0))
+	# defeat: slow falling minor lament
+	out["defeat"] = _gen(3.2, func(t):
+		var v: float = _brass(t, 220.0, 0.9, 0.9) + _brass(t - 0.9, 196.0, 0.8, 0.9) + _brass(t - 1.7, 165.0, 1.5, 1.0) + _brass(t - 1.7, 110.0, 1.5, 0.8)
+		return clampf(v * 0.6, -1.0, 1.0))
+	# achievement / rank-up: three rising bell strikes
+	out["ding"] = _gen(1.4, func(t):
+		var v := 0.0
+		var notes := [1046.0, 1318.0, 1568.0]
+		for i in 3:
+			var tt: float = t - 0.14 * i
+			if tt > 0.0:
+				v += exp(-tt * 4.0) * (sin(tau * notes[i] * tt) + 0.4 * sin(tau * notes[i] * 2.0 * tt))
+		return 0.22 * v)
+	out["click"] = _gen(0.07, func(t):
+		return 0.5 * sin(tau * 1500.0 * t) * exp(-t * 70.0) + 0.2 * _nz() * exp(-t * 200.0))
+	# heavy gate creak and thud
+	out["gate"] = _gen(1.8, func(t):
+		var f: float = 62.0 + 14.0 * sin(tau * 2.3 * t) + 8.0 * sin(tau * 7.1 * t)
+		var saw: float = fmod(f * t, 1.0) * 2.0 - 1.0
+		var amp: float = clampf(t / 0.2, 0.0, 1.0) * clampf((1.5 - t) / 0.3, 0.0, 1.0)
+		var creak: float = 0.35 * saw * amp * (0.6 + 0.4 * sin(tau * 11.0 * t))
+		var rumble: float = 0.3 * sin(tau * 38.0 * t) * amp
+		var thud: float = 0.7 * sin(tau * 45.0 * maxf(t - 1.5, 0.0)) * exp(-maxf(t - 1.5, 0.0) * 12.0) * (1.0 if t > 1.5 else 0.0)
+		return clampf(creak + rumble + thud, -1.0, 1.0))
+	# fire crackle
+	var pops := []
+	for i in 26:
+		pops.append([randf() * 1.4, 0.4 + randf() * 0.8, 900.0 + randf() * 2200.0])
+	out["crackle"] = _gen(1.5, func(t):
+		var v: float = 0.06 * _nz() * (0.5 + 0.5 * sin(tau * 9.0 * t))
+		for p in pops:
+			var tt: float = t - float(p[0])
+			if tt > 0.0 and tt < 0.06:
+				v += 0.5 * float(p[1]) * sin(tau * float(p[2]) * tt) * exp(-tt * 90.0)
+		return clampf(v, -1.0, 1.0))
+	# arrow hitting a shield / body
+	out["arrowhit"] = _gen(0.22, func(t):
+		return 0.6 * (sin(tau * 420.0 * t) * exp(-t * 40.0) + 0.5 * _nz() * exp(-t * 110.0)))
+	# ambient beds
+	var wind_s := [0.0, 0.0]
+	var birds := [[0.7, 3100.0], [2.35, 3600.0], [2.5, 3300.0], [4.2, 2900.0], [5.3, 3500.0]]
+	var taps := [1.4, 3.25, 3.7, 5.6]
+	out["amb_town"] = _gen(6.0, func(t):
+		wind_s[0] += 0.015 * (_nz() - wind_s[0])
+		wind_s[1] += 0.02 * (wind_s[0] - wind_s[1])
+		var gust: float = 0.55 + 0.45 * sin(tau * t / 6.0 * 2.0)
+		var v: float = 5.0 * wind_s[1] * gust
+		for b in birds:
+			var tt: float = t - float(b[0])
+			if tt > 0.0 and tt < 0.22:
+				v += 0.16 * sin(tau * (float(b[1]) + 900.0 * tt * 3.0) * tt) * sin(PI * tt / 0.22)
+		for tp in taps:
+			var tt2: float = t - float(tp)
+			if tt2 > 0.0 and tt2 < 0.12:
+				v += 0.18 * sin(tau * 1100.0 * tt2) * exp(-tt2 * 45.0)
+		v += 0.02 * sin(tau * 98.0 * t) * (0.5 + 0.5 * sin(tau * 0.5 * t))
+		return clampf(v, -1.0, 1.0)
+	, true)
+	var wind_f := [0.0, 0.0]
+	out["amb_field"] = _gen(6.0, func(t):
+		wind_f[0] += 0.012 * (_nz() - wind_f[0])
+		wind_f[1] += 0.018 * (wind_f[0] - wind_f[1])
+		var gust: float = 0.5 + 0.5 * sin(tau * t / 6.0 * 3.0 + 1.0)
+		var v: float = 6.0 * wind_f[1] * gust
+		var tt: float = t - 3.4
+		if tt > 0.0 and tt < 0.3:
+			v += 0.12 * sin(tau * (620.0 - 200.0 * tt) * tt) * sin(PI * tt / 0.3) * (1.0 if fmod(tt, 0.15) < 0.1 else 0.3)
+		return clampf(v, -1.0, 1.0)
+	, true)
+	return out

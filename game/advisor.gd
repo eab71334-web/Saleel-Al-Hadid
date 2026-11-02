@@ -200,6 +200,20 @@ static func split_clauses(text_n: String) -> Array:
 
 
 # ---------------------------------------------------------------- main parser
+const TEAM_WORDS := [
+	["ازرق", "blue", "eaglecrest", "النسر"], ["احمر", "red", "blackthorn", "الشوك"],
+	["اخضر", "green", "greenvale", "الوادي"], ["ذهبي", "اصفر", "yellow", "goldmere", "البحيره", "gold king", "golden"],
+	["بنفسج", "purple", "violet", "violetkeep"], ["برتقال", "orange", "emberfall", "الجمر"]]
+
+
+# Which kingdom does the sentence name? (-1 = none)
+static func team_in(n: String) -> int:
+	for i in TEAM_WORDS.size():
+		if has(n, TEAM_WORDS[i]):
+			return i
+	return -1
+
+
 static func parse(text: String) -> Array:
 	var raw := clean(text).strip_edges()
 	var n := norm(raw)
@@ -216,13 +230,22 @@ static func parse(text: String) -> Array:
 	var is_letter := has(n, K_LETTER) and not has(n, V_ADV + ["war ", "حرب"]) or n.contains("للملك") or n.contains("tell the king")
 	if is_letter and (has(n, ["ارسل", "ابعث", "ابعت", "اكتب", "وجه", "send", "write", "tell", "say", "dispatch", "نادي", "ناد", "call", "احضر", "هات", "جيب", "قل", "قول", "كلم"]) or n.contains("رساله") or n.contains("letter")):
 		var content := _letter_text(raw, n)
-		return [{"act": "letter", "text": content}]
+		var la := {"act": "letter", "text": content}
+		var lt := team_in(n.substr(0, maxi(n.find(content.to_lower()), n.length())) if content == "" else n.replace(content.to_lower(), ""))
+		if lt >= 0:
+			la["to"] = lt
+		return [la]
 	for cl in split_clauses(n):
 		var a := _clause(cl)
 		if not a.is_empty():
 			out.append(a)
 	if out.is_empty():
 		out.append({"act": "unknown"})
+	var tm := team_in(n)
+	if tm >= 0:
+		for a in out:
+			if a.act == "war" or a.act == "challenge":
+				a["to"] = tm
 	return out
 
 

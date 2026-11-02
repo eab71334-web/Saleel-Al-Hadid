@@ -4,21 +4,17 @@ extends Node
 # Host-authoritative: the host simulates everything, clients get a small state
 # dictionary 4 times a second plus a few reliable events.
 
-const PLOT_LX := [-30.0, -18.0, -6.0, 6.0, 18.0, 30.0]
-const PLOT_LD := [13.0, 27.0]
 const GATE_HALF := 4.8
+const POSTERN_X := -24.0
+const TownS := preload("res://game/town.gd")
 const LocS := preload("res://game/loc.gd")
+const ProfS := preload("res://game/profile.gd")
 const MapS := preload("res://game/mapview.gd")
 const CourtS := preload("res://game/court.gd")
 const FortressS := preload("res://game/fortress.gd")
-const NSLOTS := 12
-const HOUSE_ORDER := [2, 3, 1, 4, 0, 5, 8, 9, 7, 10, 6, 11]
-const BARRACKS_ORDER := [0, 5, 6, 11, 1, 4, 7, 10]
 
 const START_GOLD := 120.0
 const START_FOOD := 80.0
-const HOUSE_COST := 80
-const BARRACKS_COST := 150
 const VILLAGER_FOOD := 20
 const BUY_GOLD := 30
 const BUY_FOOD := 40
@@ -29,16 +25,27 @@ const TREES_PER_TEAM := 12
 const CASTLE_HP := [2500.0, 3600.0, 5200.0]
 const UPGRADE := [[150, 60], [320, 140]]
 const REPAIR_COST := 70
-const SLOT_LIMIT := [6, 9, 12]
 # kind: [gold, food, seconds, castle level needed]
 const TRAIN := {"sword": [30, 20, 4.0, 1], "archer": [40, 25, 5.0, 2], "cav": [90, 50, 7.0, 3],
 	"ballista": [110, 40, 8.0, 2], "catapult": [170, 60, 10.0, 3]}
-const WOOD_START := 30.0
+const TRAIN_X := {"sword": {"iron": 3}, "archer": {"wood": 4}, "cav": {"iron": 5}, "ballista": {"wood": 18, "iron": 4}, "catapult": {"wood": 26, "stone": 12, "iron": 4}}
+const WOOD_START := 70.0
+const STONE_START := 45.0
+const IRON_START := 12.0
+const YEAR := 480.0   # seconds per year, 4 seasons
 const PLANK_GOLD := 40
 const PLANK_WOOD := 20
 const SHIP_GOLD := 100
 const SHIP_WOOD := 40
 const MAX_SHIPS := 3
+const YARD_GOLD := 150
+const YARD_WOOD := 60
+const TRANSPORT_GOLD := 90
+const TRANSPORT_WOOD := 45
+const MAX_TRANSPORTS := 2
+const FISHER_GOLD := 40
+const FISHER_WOOD := 15
+const MAX_FISHERS := 4
 const WALL_Y := 6.8
 const RAMP_X := 12.0
 const SIEGE_MULT := 0.2
@@ -57,13 +64,16 @@ var battle
 var net
 var is_srv := true
 var my_team := 0
+var king_trait := ""      # my ruler trait (solo only)
+var king_diff := "normal"
+var my_king_name := ""
+var prog_t := 2.0
 
 var nk := 2
 var war_pairs := {}
 var gold := [START_GOLD, START_GOLD]
 var food := [START_FOOD, START_FOOD]
 var level := [1, 1]
-var slots := [[], []]
 var castle_hp := [CASTLE_HP[0], CASTLE_HP[0]]
 var fallen := [false, false]
 var tree_pos := [[], []]
@@ -72,20 +82,29 @@ var pop_used := [0, 0]
 var vill_n := [0, 0]
 var soldier_n := [0, 0]
 var wood := [0.0, 0.0]
+var stone := [0.0, 0.0]
+var iron := [0.0, 0.0]
+var forge_w := [0, 0]   # weapon level per kingdom (0-3)
+var forge_a := [0, 0]   # armour level per kingdom (0-3)
+var grain := [0.0, 0.0]
+var flour := [0.0, 0.0]
+var year_t := 0.0
 var ship_n := [0, 0]
+var trn_n := [0, 0]
+var fsh_n := [0, 0]
+var yard := [false, false]
 var queue := [[], []]
 var letter_cd := [0.0, 0.0]
 var decree_cd := [{"tax": 0.0, "feast": 0.0}, {"tax": 0.0, "feast": 0.0}]
 const FEAST_FOOD := 40
 
-var plot_type := [[], []]
-var plot_nodes := [[], []]
-var plot_marks := [[], []]
 var tree_nodes := [[], []]
 var extras := [{}, {}]
 var fires := [[], []]
 var vis_ready := false
 var gate_open := [false, false]
+var post_open := [false, false]
+var town: Node = null
 var view_team := -1
 var fortress: Node = null
 var mapv: Node = null
@@ -98,6 +117,8 @@ var challenge_t := 0.0
 var duel_t := 0.0
 var duel_pair := [0, 1]
 var duel_done := false
+var clash = null
+var final_team := -1
 var duel_ring: MeshInstance3D = null
 var respawn := {}
 var ai_next := [0.0, 0.0]
@@ -201,10 +222,11 @@ func king_name(t: int) -> String:
 	return "King of %s (AI)" % battle.team_name(t)
 
 
-func plot_pos(t: int, i: int) -> Vector3:
-	var lx: float = PLOT_LX[i % 6]
-	var ld: float = PLOT_LD[i / 6]
-	return lw(t, Vector3(lx, 0.0, -72.0 - ld))
+func fish_spot(t: int, id: int) -> Vector3:
+	var sx: float = (float(id % 4) - 1.5) * 16.0
+	var sz: float = float((id / 4) % 3) * 9.0
+	var p: Vector3 = lw(t, Vector3(sx, 0.0, -(battle.coast_r - battle.ring_r + 73.0 + 24.0 + sz)))
+	return battle.keep_on_sea(p)
 
 
 # where new ships appear: on the water behind the castle's rear wall
@@ -300,15 +322,9 @@ func _solid(t: int, p: Vector3) -> bool:
 			return true
 		if d > 117.8:
 			return true
-	# houses and barracks are solid
-	if d > 76.0 and d < 100.0 and ax < 36.0 and t < plot_type.size():
-		for i in plot_type[t].size():
-			if int(plot_type[t][i]) == 0:
-				continue
-			var px: float = PLOT_LX[i % 6]
-			var pd: float = 72.0 + PLOT_LD[i / 6]
-			if absf(l.x - px) < 4.6 and absf(d - pd) < 3.8:
-				return true
+	# buildings are solid
+	if town != null and town.solid(t, l):
+		return true
 	if d > 71.4 and d < 74.6 and ax < 37.5:
 		if ax < GATE_HALF and gate_open[t]:
 			return false
@@ -316,13 +332,15 @@ func _solid(t: int, p: Vector3) -> bool:
 	if ax > 34.4 and ax < 37.6 and d >= 74.6 and d < 121.5:
 		return true
 	if d > 119.8 and d < 122.8 and ax < 37.5:
+		if absf(l.x - POSTERN_X) < 2.4 and post_open[t]:
+			return false
 		return true
 	return false
 
 
 # Walls stop units (except through the open gate). Called after every step of a unit.
 func constrain(u, oldp: Vector3) -> void:
-	if u.kind == "ship":
+	if u.is_ship:
 		return
 	var gy := 0.0
 	for t2 in nk:
@@ -350,14 +368,46 @@ func constrain(u, oldp: Vector3) -> void:
 			# else: already inside a freshly built house - let it walk out
 
 
-# Next waypoint for a unit of team t that wants to reach `to` (goes through the gate).
+func postern_in(t: int) -> Vector3:
+	return lw(t, Vector3(POSTERN_X, 0.0, -117.5))
+
+
+func postern_out(t: int) -> Vector3:
+	return lw(t, Vector3(POSTERN_X, 0.0, -126.5))
+
+
+# 0 = open ground in front of the castle, 1 = inside the walls, 2 = land behind the castle
+func zone(t: int, p: Vector3) -> int:
+	var l := wl(t, p)
+	var d := -l.z
+	if absf(l.x) < 34.4 and d > 74.5 and d < 121.0:
+		return 1
+	if d >= 121.0 and absf(l.x) < 80.0:
+		return 2
+	return 0
+
+
+# Next waypoint for a unit of team t that wants to reach `to` (goes through the gates).
 func via(t: int, from: Vector3, to: Vector3) -> Vector3:
 	if fallen[t]:
 		return to
-	var fi := inside(t, from)
-	var ti := inside(t, to)
-	if fi == ti:
+	var fz := zone(t, from)
+	var tz := zone(t, to)
+	if fz == tz:
 		return to
+	if fz == 2:
+		var po := postern_out(t)
+		if depth(t, from) > 124.0 and Vector2(from.x - po.x, from.z - po.z).length() > 2.5:
+			return po
+		return postern_in(t)
+	if tz == 2:
+		if fz == 0:
+			return via(t, from, postern_in(t))
+		var pi := postern_in(t)
+		if Vector2(from.x - pi.x, from.z - pi.z).length() > 2.5 and depth(t, from) < 118.5:
+			return pi
+		return postern_out(t)
+	var fi := fz == 1
 	var df := depth(t, from)
 	if fi:
 		if Vector2(from.x - gate_in(t).x, from.z - gate_in(t).z).length() > 3.0:
@@ -381,7 +431,22 @@ func _update_gates() -> void:
 					break
 		if battle.intro and t == my_team:
 			open = true
+		if open != gate_open[t]:
+			battle.sfx.play("gate", lw(t, Vector3(0, 4.0, -73.0)), 4.0, 1.0)
 		gate_open[t] = open
+		var po := false
+		if fallen[t]:
+			po = true
+		else:
+			var pp: Vector3 = lw(t, Vector3(POSTERN_X, 0, -121.0))
+			for u in battle.units.values():
+				if u.team == t and not u.dead and Vector2(u.position.x - pp.x, u.position.z - pp.z).length() < 6.5:
+					po = true
+					break
+		post_open[t] = po
+		var ex: Dictionary = extras[t]
+		if ex.has("post") and ex.post != null:
+			ex.post.visible = not po
 
 
 func castle_gate(t: int) -> Vector3:
@@ -393,28 +458,125 @@ func castle_alive(t: int) -> bool:
 
 
 func count_slots(t: int, typ: int) -> int:
-	var n := 0
-	for v in slots[t]:
-		if int(v) == typ:
-			n += 1
-	return n
-
-
-func used_slots(t: int) -> int:
-	return NSLOTS - count_slots(t, 0)
+	# 1 = houses, 2 = barracks (kept for older callers)
+	if town == null:
+		return 0
+	return town.count(t, "house" if typ == 1 else "barracks")
 
 
 func pop_cap(t: int) -> int:
-	return BASE_CAP + HOUSE_CAP * count_slots(t, 1)
+	return BASE_CAP + HOUSE_CAP * count_slots(t, 1) + (4 if trait_has(t, "pious") else 0)
 
 
-func free_slot(t: int, order: Array) -> int:
-	if used_slots(t) >= SLOT_LIMIT[level[t] - 1]:
-		return -1
-	for i in order:
-		if int(slots[t][i]) == 0:
-			return i
-	return -1
+# ---- materials
+func res_get(t: int, key: String) -> float:
+	match key:
+		"gold":
+			return gold[t]
+		"food":
+			return food[t]
+		"wood":
+			return wood[t]
+		"stone":
+			return stone[t]
+		"iron":
+			return iron[t]
+		"grain":
+			return grain[t]
+		"flour":
+			return flour[t]
+	return 0.0
+
+
+func res_add(t: int, key: String, v: float) -> void:
+	match key:
+		"gold":
+			gold[t] = maxf(0.0, gold[t] + v)
+		"food":
+			food[t] = maxf(0.0, food[t] + v)
+		"wood":
+			wood[t] = maxf(0.0, wood[t] + v)
+		"stone":
+			stone[t] = maxf(0.0, stone[t] + v)
+		"iron":
+			iron[t] = maxf(0.0, iron[t] + v)
+		"grain":
+			grain[t] = maxf(0.0, grain[t] + v)
+		"flour":
+			flour[t] = maxf(0.0, flour[t] + v)
+
+
+# 0 spring, 1 summer, 2 autumn, 3 winter
+func season() -> int:
+	return int(fmod(year_t, YEAR) / (YEAR * 0.25))
+
+
+func season_farm() -> float:
+	match season():
+		0:
+			return 0.9
+		1:
+			return 1.2
+		2:
+			return 1.4
+	return 0.1
+
+
+func season_name() -> String:
+	return ["Spring", "Summer", "Autumn", "Winter"][season()]
+
+
+func _extra_text(kind: String) -> String:
+	var tx: Dictionary = TRAIN_X.get(kind, {})
+	var s := ""
+	for rk in tx.keys():
+		s += " %d%s" % [int(tx[rk]), String(rk).substr(0, 1)]
+	return s
+
+
+func _extra_ok(t: int, kind: String) -> bool:
+	var tx: Dictionary = TRAIN_X.get(kind, {})
+	for rk in tx.keys():
+		if res_get(t, String(rk)) < float(tx[rk]):
+			return false
+	return true
+
+
+func train_block(t: int, kind: String) -> String:
+	if town.count(t, "barracks") < 1:
+		return "Build a barracks first!"
+	if kind != "archer" and town.count(t, "smithy") < 1:
+		return "Build a smithy first!"
+	if kind == "cav" and town.count(t, "stable") < 1:
+		return "Build a stable first!"
+	return ""
+
+
+const TRADE := {
+	"wood": [20, 14, 30], "stone": [20, 22, 44], "iron": [10, 24, 70], "grain": [20, 10, 28]}   # lot, gold when selling, gold when buying
+
+
+func _trade(t: int, human: bool, key: String, buy: bool) -> void:
+	if town.count(t, "market") < 1:
+		if human: toast_team(t, "Build a market first.")
+		return
+	if not TRADE.has(key):
+		return
+	var tr: Array = TRADE[key]
+	if buy:
+		if gold[t] < float(tr[2]):
+			if human: toast_team(t, "Not enough gold!")
+			return
+		gold[t] -= float(tr[2])
+		res_add(t, key, float(tr[0]))
+	else:
+		if res_get(t, key) < float(tr[0]):
+			if human: toast_team(t, "Not enough materials")
+			return
+		res_add(t, key, -float(tr[0]))
+		gold[t] += float(tr[1])
+	if human and t == my_team:
+		battle.sfx.play_ui("coin", -6.0)
 
 
 func queued(t: int, kind: String) -> int:
@@ -439,39 +601,31 @@ func setup() -> void:
 	is_srv = battle.is_srv
 	my_team = battle.my_team
 	nk = battle.nk
-	gold = []; food = []; level = []; slots = []; castle_hp = []; fallen = []; wood = []; ship_n = []
+	var kc: Dictionary = battle.cfg.get("king", {})
+	if not kc.is_empty() and not net.online:
+		king_trait = String(kc.get("trait", ""))
+		king_diff = String(kc.get("diff", "normal"))
+		my_king_name = String(kc.get("name", ""))
+	gold = []; food = []; level = []; castle_hp = []; fallen = []; wood = []; stone = []; iron = []; grain = []; flour = []; forge_w = []; forge_a = []; ship_n = []; trn_n = []; fsh_n = []; yard = []
 	tree_pos = []; tree_food = []; pop_used = []; vill_n = []; soldier_n = []; queue = []
-	letter_cd = []; decree_cd = []; plot_type = []; plot_nodes = []; plot_marks = []
-	tree_nodes = []; extras = []; fires = []; gate_open = []; ai_next = []; ai_info = []; march_cd = []
+	letter_cd = []; decree_cd = []
+	tree_nodes = []; extras = []; fires = []; gate_open = []; post_open = []; ai_next = []; ai_info = []; march_cd = []
 	for t in nk:
-		gold.append(START_GOLD); food.append(START_FOOD); level.append(1); wood.append(WOOD_START); ship_n.append(0)
-		slots.append([]); castle_hp.append(CASTLE_HP[0]); fallen.append(false)
+		gold.append(START_GOLD); food.append(START_FOOD); level.append(1); wood.append(WOOD_START); stone.append(STONE_START); iron.append(IRON_START); grain.append(0.0); flour.append(0.0); forge_w.append(0); forge_a.append(0); ship_n.append(0); trn_n.append(0); fsh_n.append(0); yard.append(false)
+		castle_hp.append(CASTLE_HP[0]); fallen.append(false)
 		tree_pos.append([]); tree_food.append([]); pop_used.append(0); vill_n.append(0); soldier_n.append(0)
 		queue.append([]); letter_cd.append(0.0); decree_cd.append({"tax": 0.0, "feast": 0.0})
-		plot_type.append([]); plot_nodes.append([]); plot_marks.append([]); tree_nodes.append([])
-		extras.append({}); fires.append([]); gate_open.append(false); ai_next.append(0.0)
+		tree_nodes.append([])
+		extras.append({}); fires.append([]); gate_open.append(false); post_open.append(false); ai_next.append(0.0)
 		ai_info.append({}); march_cd.append(0.0)
-	for t in nk:
-		var a := []
-		a.resize(NSLOTS)
-		a.fill(0)
-		slots[t] = a
-		var b := []
-		b.resize(NSLOTS)
-		b.fill(0)
-		plot_type[t] = b
-		var c := []
-		c.resize(NSLOTS)
-		c.fill(null)
-		plot_nodes[t] = c
-		var d := []
-		d.resize(NSLOTS)
-		d.fill(null)
-		plot_marks[t] = d
-		slots[t][2] = 1
-		slots[t][3] = 1
 	_make_trees()
-	_make_plot_marks()
+	town = TownS.new()
+	town.name = "Town"
+	add_child(town)
+	town.setup()
+	for t in nk:
+		town.place(t, "house", -19.0, 88.0, true)
+		town.place(t, "house", 19.0, 88.0, true)
 	fortress = FortressS.new()
 	fortress.name = "Fortress"
 	fortress.kingdom = self
@@ -481,15 +635,6 @@ func setup() -> void:
 	_refresh_visuals()
 	vis_ready = true
 	_build_ui()
-
-
-func _make_plot_marks() -> void:
-	var dirt: StandardMaterial3D = battle._mat(Color(0.33, 0.25, 0.15), 1.0)
-	var bm: BoxMesh = battle._box(Vector3(5.2, 0.06, 4.4))
-	for t in nk:
-		for i in NSLOTS:
-			var m: MeshInstance3D = battle._mesh(battle, bm, dirt, plot_pos(t, i) + Vector3(0, 0.03, 0), Vector3(0, ang(t), 0), false)
-			plot_marks[t][i] = m
 
 
 func _make_trees() -> void:
@@ -616,38 +761,10 @@ func _make_barracks(t: int) -> Node3D:
 	return n
 
 
-func _set_plot(t: int, i: int, typ: int, animate: bool) -> void:
-	var old = plot_nodes[t][i]
-	if old != null and is_instance_valid(old):
-		old.queue_free()
-	plot_nodes[t][i] = null
-	plot_type[t][i] = typ
-	var mark = plot_marks[t][i]
-	if mark != null:
-		mark.visible = typ == 0
-	if typ == 0:
-		return
-	var n: Node3D = _make_house(t) if typ == 1 else _make_barracks(t)
-	n.position = plot_pos(t, i)
-	n.rotation.y = ang(t)
-	battle.add_child(n)
-	plot_nodes[t][i] = n
-	if animate:
-		n.scale = Vector3(1.0, 0.02, 1.0)
-		var tw := create_tween()
-		tw.tween_property(n, "scale", Vector3.ONE, 1.1).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-		battle._burst(n.position + Vector3(0, 1.0, 0), Color(0.62, 0.5, 0.38), 18, 4.5, false)
-		battle.sfx.play("hammer", n.position, 0.0)
-
-
 func _refresh_visuals() -> void:
 	if fortress != null:
 		fortress.sync()
 	for t in nk:
-		for i in NSLOTS:
-			var want: int = int(slots[t][i])
-			if want != int(plot_type[t][i]):
-				_set_plot(t, i, want, vis_ready)
 		for i in tree_nodes[t].size():
 			var fr: Node3D = tree_nodes[t][i]
 			var r: float = clampf(float(tree_food[t][i]) / TREE_MAX, 0.0, 1.0)
@@ -660,6 +777,12 @@ func _refresh_visuals() -> void:
 			ex.l3.visible = level[t] >= 3
 			if vis_ready and ex.l2.visible and not was2:
 				battle._burst(lw(t, Vector3(0, 16, -112.0)), Color(1, 0.9, 0.5), 30, 8.0, true)
+		if not ex.is_empty() and ex.get("yard") != null:
+			var yv: Node3D = ex.yard
+			var wasy: bool = yv.visible
+			yv.visible = yard[t]
+			if vis_ready and yard[t] and not wasy:
+				battle._burst(lw(t, Vector3(0, 4, -128.0)), Color(0.8, 0.65, 0.4), 30, 6.0, true)
 		var maxhp: float = CASTLE_HP[level[t] - 1]
 		var ratio: float = castle_hp[t] / maxhp
 		for k in fires[t].size():
@@ -683,6 +806,13 @@ func _state() -> Dictionary:
 	var fa := []
 	var wd := []
 	var shp := []
+	var stn := []
+	var irn := []
+	var grn := []
+	var flr := []
+	var yd := []
+	var tn := []
+	var fnn := []
 	for t in nk:
 		var a := []
 		for v in tree_food[t]:
@@ -691,7 +821,6 @@ func _state() -> Dictionary:
 		gl.append(int(gold[t]))
 		fl.append(int(food[t]))
 		lv.append(level[t])
-		sl.append(slots[t])
 		hp.append(int(castle_hp[t]))
 		pu.append(pop_used[t])
 		vn.append(vill_n[t])
@@ -700,8 +829,16 @@ func _state() -> Dictionary:
 		fa.append(fallen[t])
 		wd.append(int(wood[t]))
 		shp.append(ship_n[t])
+		stn.append(int(stone[t]))
+		irn.append(int(iron[t]))
+		grn.append(int(grain[t]))
+		flr.append(int(flour[t]))
+		yd.append(yard[t])
+		tn.append(trn_n[t])
+		fnn.append(fsh_n[t])
 	return {"w": battle.war, "wp": war_pairs.keys(), "g": gl, "f": fl, "l": lv, "s": sl, "h": hp, "tf": tf,
-		"pu": pu, "vn": vn, "sn": sn, "q": qq, "fl": fa, "wd": wd, "sh": shp}
+		"pu": pu, "vn": vn, "sn": sn, "q": qq, "fl": fa, "wd": wd, "sh": shp, "yd": yd, "tn": tn, "fn": fnn,
+		"fw": forge_w.duplicate(), "fa": forge_a.duplicate(), "stn": stn, "irn": irn, "grn": grn, "flr": flr, "yr": year_t, "tw": town.pack()}
 
 
 func _apply_state(s: Dictionary) -> void:
@@ -713,7 +850,6 @@ func _apply_state(s: Dictionary) -> void:
 		gold[t] = float(s.g[t])
 		food[t] = float(s.f[t])
 		level[t] = int(s.l[t])
-		slots[t] = s.s[t].duplicate()
 		castle_hp[t] = float(s.h[t])
 		for i in tree_food[t].size():
 			tree_food[t][i] = float(s.tf[t][i])
@@ -724,6 +860,17 @@ func _apply_state(s: Dictionary) -> void:
 		fallen[t] = bool(s.fl[t])
 		wood[t] = float(s.wd[t])
 		ship_n[t] = int(s.sh[t])
+		stone[t] = float(s.stn[t])
+		iron[t] = float(s.irn[t])
+		forge_w[t] = int(s.fw[t])
+		forge_a[t] = int(s.fa[t])
+		grain[t] = float(s.grn[t])
+		flour[t] = float(s.flr[t])
+		yard[t] = bool(s.yd[t])
+		trn_n[t] = int(s.tn[t])
+		fsh_n[t] = int(s.fn[t])
+	year_t = float(s.yr)
+	town.unpack(s.tw)
 	_refresh_visuals()
 
 
@@ -792,31 +939,17 @@ func _cmd(owner: int, act: String, data: Dictionary) -> void:
 				return
 			food[t] -= VILLAGER_FOOD
 			queue[t].append({"kind": "villager", "t": 3.0, "owner": owner})
-		"house":
-			if gold[t] < HOUSE_COST:
-				if human: toast_team(t, "Not enough gold!")
+		"build":
+			var why: String = town.place(t, String(data.get("type", "")), float(data.get("lx", 0.0)), float(data.get("d", 0.0)))
+			if why != "":
+				if human: toast_team(t, why)
 				return
-			var i := free_slot(t, HOUSE_ORDER)
-			if i < 0:
-				if human: toast_team(t, "No free land - upgrade your castle!")
-				return
-			gold[t] -= HOUSE_COST
-			slots[t][i] = 1
-			battle.sfx.play_ui("coin", -6.0) if t == my_team else null
-		"barracks":
-			var maxb := 1 if level[t] < 3 else 2
-			if count_slots(t, 2) >= maxb:
-				if human: toast_team(t, "Barracks limit reached" + ("" if level[t] >= 3 else " (upgrade castle for another)"))
-				return
-			if gold[t] < BARRACKS_COST:
-				if human: toast_team(t, "Not enough gold!")
-				return
-			var j := free_slot(t, BARRACKS_ORDER)
-			if j < 0:
-				if human: toast_team(t, "No free land - upgrade your castle!")
-				return
-			gold[t] -= BARRACKS_COST
-			slots[t][j] = 2
+			if t == my_team:
+				battle.sfx.play_ui("coin", -6.0)
+		"demolish":
+			town.demolish(t, int(data.get("id", -1)))
+		"trade":
+			_trade(t, human, String(data.get("res", "")), bool(data.get("buy", false)))
 		"upgrade":
 			if level[t] >= 3:
 				return
@@ -830,6 +963,28 @@ func _cmd(owner: int, act: String, data: Dictionary) -> void:
 			level[t] += 1
 			castle_hp[t] += CASTLE_HP[level[t] - 1] - oldmax
 			ev_all("level", {"team": t, "lvl": level[t]})
+		"forge":
+			var which: String = String(data.get("w", "w"))
+			var lvl: int = forge_w[t] if which == "w" else forge_a[t]
+			if town.count(t, "smithy") <= 0:
+				if human: toast_team(t, "Build a smithy first!")
+				return
+			if lvl >= 3:
+				if human: toast_team(t, "Already at the highest level.")
+				return
+			var cst := forge_cost(which, lvl)
+			if gold[t] < float(cst.gold) or iron[t] < float(cst.iron) or stone[t] < float(cst.stone):
+				if human: toast_team(t, "Not enough materials for weapons!")
+				return
+			gold[t] -= float(cst.gold)
+			iron[t] -= float(cst.iron)
+			stone[t] -= float(cst.stone)
+			if which == "w":
+				forge_w[t] += 1
+			else:
+				forge_a[t] += 1
+			toast_team(t, "The smith finished better weapons!" if which == "w" else "The smith finished stronger armour!")
+			battle.sfx.play_ui("hammer", -4.0) if t == my_team else null
 		"repair":
 			var mx: float = CASTLE_HP[level[t] - 1]
 			if gold[t] < REPAIR_COST:
@@ -841,37 +996,68 @@ func _cmd(owner: int, act: String, data: Dictionary) -> void:
 			gold[t] -= REPAIR_COST
 			castle_hp[t] = minf(mx, castle_hp[t] + mx * 0.25)
 			battle.sfx.play_ui("hammer", -4.0) if t == my_team else null
-		"planks":
-			if gold[t] < PLANK_GOLD:
-				if human: toast_team(t, "Not enough gold!")
-				return
-			gold[t] -= PLANK_GOLD
-			wood[t] += PLANK_WOOD
-		"ship":
+		"shipyard":
 			if not battle.sea:
 				if human: toast_team(t, "Ships need the Island map.")
+				return
+			if yard[t]:
 				return
 			if level[t] < 2:
 				if human: toast_team(t, "Castle level 2 needed")
 				return
-			if ship_n[t] >= MAX_SHIPS:
+			if gold[t] < YARD_GOLD or wood[t] < YARD_WOOD:
+				if human: toast_team(t, "Need %d gold and %d planks" % [YARD_GOLD, YARD_WOOD])
+				return
+			gold[t] -= YARD_GOLD
+			wood[t] -= YARD_WOOD
+			yard[t] = true
+			ev_all("toast", {"team": t, "text": "The shipyard is built!"})
+			battle.sfx.play("hammer", dock_pos(t), 4.0)
+		"ship":
+			if not battle.sea:
+				if human: toast_team(t, "Ships need the Island map.")
+				return
+			if not yard[t]:
+				if human: toast_team(t, "Build a shipyard first.")
+				return
+			var typ: String = str(data.get("type", "ship"))
+			var cg := SHIP_GOLD
+			var cw := SHIP_WOOD
+			var have: int = ship_n[t]
+			var mx := MAX_SHIPS
+			if typ == "transport":
+				cg = TRANSPORT_GOLD; cw = TRANSPORT_WOOD; have = trn_n[t]; mx = MAX_TRANSPORTS
+			elif typ == "fisher":
+				cg = FISHER_GOLD; cw = FISHER_WOOD; have = fsh_n[t]; mx = MAX_FISHERS
+			else:
+				typ = "ship"
+			if have >= mx:
 				if human: toast_team(t, "You already have the maximum number of ships.")
 				return
-			if gold[t] < SHIP_GOLD or wood[t] < SHIP_WOOD:
-				if human: toast_team(t, "Need %d gold and %d planks" % [SHIP_GOLD, SHIP_WOOD])
+			if gold[t] < cg or wood[t] < cw:
+				if human: toast_team(t, "Need %d gold and %d planks" % [cg, cw])
 				return
-			gold[t] -= SHIP_GOLD
-			wood[t] -= SHIP_WOOD
-			var sp: Vector3 = dock_pos(t) + battle.rotv(t, Vector3(float(ship_n[t]) * 9.0 - 9.0, 0, 0))
+			gold[t] -= cg
+			wood[t] -= cw
+			var nb: int = ship_n[t] + trn_n[t] + fsh_n[t]
+			var sp: Vector3 = dock_pos(t) + battle.rotv(t, Vector3(float(nb % 6) * 8.0 - 20.0, 0, 6.0 * float(nb / 6)))
 			sp = battle.keep_on_sea(sp)
-			var sh = battle._make_unit("ship", t, owner, sp)
+			var sh = battle._make_unit(typ, t, owner, sp)
 			sh.rotation.y = atan2(sp.x, sp.z)
 			sh.scale = Vector3(1, 0.05, 1)
 			create_tween().tween_property(sh, "scale", Vector3.ONE, 1.4).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-			ship_n[t] += 1
+			if typ == "ship":
+				ship_n[t] += 1
+			elif typ == "transport":
+				trn_n[t] += 1
+			else:
+				fsh_n[t] += 1
 			ev_all("ship", {"team": t})
 			battle.sfx.play("hammer", sp, 4.0)
 		"buyfood":
+			if town.count(t, "market") < 1:
+				if human: toast_team(t, "Build a market first.")
+				return
 			if gold[t] < BUY_GOLD:
 				if human: toast_team(t, "Not enough gold!")
 				return
@@ -885,11 +1071,20 @@ func _cmd(owner: int, act: String, data: Dictionary) -> void:
 			if level[t] < info[3]:
 				if human: toast_team(t, "Castle level %d needed" % info[3])
 				return
-			if count_slots(t, 2) < 1:
-				if human: toast_team(t, "Build a barracks first!")
+			var blk: String = train_block(t, kind)
+			if blk != "":
+				if human: toast_team(t, blk)
 				return
 			if gold[t] < info[0] or food[t] < info[1]:
 				if human: toast_team(t, "Need %d gold and %d food" % [info[0], info[1]])
+				return
+			var tx: Dictionary = TRAIN_X.get(kind, {})
+			var tx_ok := true
+			for rk in tx.keys():
+				if res_get(t, String(rk)) < float(tx[rk]):
+					tx_ok = false
+			if not tx_ok:
+				if human: toast_team(t, "Not enough materials for weapons!")
 				return
 			if pop_used[t] >= pop_cap(t):
 				if human: toast_team(t, "Build more houses first!")
@@ -898,7 +1093,9 @@ func _cmd(owner: int, act: String, data: Dictionary) -> void:
 				return
 			gold[t] -= info[0]
 			food[t] -= info[1]
-			queue[t].append({"kind": kind, "t": info[2], "owner": owner})
+			for rk2 in tx.keys():
+				res_add(t, String(rk2), -float(tx[rk2]))
+			queue[t].append({"kind": kind, "t": float(info[2]) * (0.85 if trait_has(t, "warlord") else 1.0), "owner": owner})
 		"tax":
 			if float(decree_cd[t].tax) > 0.0:
 				if human: toast_team(t, "Wait %ds" % ceili(float(decree_cd[t].tax)))
@@ -965,8 +1162,48 @@ func _send_letter(from_t: int, text: String, owner: int, to_t := -1) -> void:
 
 
 # ================================================================== events (all peers)
+func _fire_fx(p: Vector3) -> void:
+	var root := Node3D.new()
+	root.position = p
+	battle.add_child(root)
+	var lt := OmniLight3D.new()
+	lt.light_color = Color(1.0, 0.55, 0.2)
+	lt.omni_range = 14.0
+	lt.light_energy = 2.5
+	lt.position = Vector3(0, 3.0, 0)
+	root.add_child(lt)
+	for i in 6:
+		var m := MeshInstance3D.new()
+		var sp := SphereMesh.new()
+		sp.radius = 0.9
+		sp.height = 1.8
+		m.mesh = sp
+		var mat := StandardMaterial3D.new()
+		mat.albedo_color = Color(1.0, 0.45 + randf() * 0.3, 0.1)
+		mat.emission_enabled = true
+		mat.emission = Color(1.0, 0.4, 0.05)
+		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		m.material_override = mat
+		m.position = Vector3(randf_range(-2.0, 2.0), 0.8 + randf() * 2.0, randf_range(-2.0, 2.0))
+		root.add_child(m)
+		var tw := create_tween()
+		tw.tween_property(m, "scale", Vector3(0.5, 1.5, 0.5), 0.25 + randf() * 0.2)
+		tw.tween_property(m, "scale", Vector3(1.2, 0.8, 1.2), 0.25 + randf() * 0.2)
+		tw.set_loops(18)
+	var out := create_tween()
+	out.tween_interval(9.0)
+	out.tween_callback(root.queue_free)
+	battle.sfx.play("crackle", p, 6.0, 1.0)
+
+
 func _ev(kind: String, d: Dictionary) -> void:
 	match kind:
+		"built":
+			if int(d.team) == my_team:
+				battle._toast(LocS.t(TownS.DEFS[String(d.type)].name) + " " + LocS.t("is finished!"), 2.4)
+				battle.sfx.play("hammer", Vector3(float(d.x), 0, float(d.z)), 2.0)
+		"fire":
+			_fire_fx(Vector3(float(d.x), 0, float(d.z)))
 		"toast":
 			var tt: int = int(d.team)
 			if tt == -1 or tt == my_team:
@@ -1217,10 +1454,15 @@ func _physics_process(dt: float) -> void:
 
 
 func _econ(dt: float) -> void:
+	year_t += dt
 	var vn := []
 	var sn := []
 	var shn := []
+	var trs := []
+	var fis := []
 	for t in nk:
+		trs.append(0)
+		fis.append(0)
 		vn.append(0)
 		sn.append(0)
 		shn.append(0)
@@ -1229,20 +1471,29 @@ func _econ(dt: float) -> void:
 			continue
 		if u.kind == "villager":
 			vn[u.team] += 1
-		elif u.kind == "ship":
-			shn[u.team] += 1
+		elif u.is_ship:
+			if u.kind == "ship":
+				shn[u.team] += 1
+			elif u.kind == "transport":
+				trs[u.team] += 1
+			else:
+				fis[u.team] += 1
 		elif u.kind != "hero":
 			sn[u.team] += 1
 	ship_n = shn
+	trn_n = trs
+	fsh_n = fis
 	vill_n = vn
 	soldier_n = sn
 	for t in nk:
 		var houses := count_slots(t, 1)
-		gold[t] += (houses * 0.5 + vn[t] * 0.1) * dt
-		wood[t] = minf(400.0, wood[t] + (0.25 + vn[t] * 0.1) * dt)
-		# everybody eats
-		food[t] = maxf(0.0, food[t] - float(vn[t] + sn[t]) * FOOD_UPKEEP * dt)
+		gold[t] += (houses * 0.22 + vn[t] * 0.04) * dt * (1.5 if trait_has(t, "merchant") else 1.0) * (1.0 + ai_extra(t))
+		town.passive(t, dt)
+		# everybody eats (more in winter)
+		var cold := 1.3 if season() == 3 else 1.0
+		food[t] = maxf(0.0, food[t] - float(vn[t] + sn[t]) * FOOD_UPKEEP * dt * cold)
 		pop_used[t] = vn[t] + sn[t] + queue[t].size()
+		_life(t, dt)
 		# trees regrow
 		for i in tree_food[t].size():
 			tree_food[t][i] = minf(TREE_MAX, float(tree_food[t][i]) + 0.4 * dt)
@@ -1258,6 +1509,189 @@ func _econ(dt: float) -> void:
 				k += 1
 
 
+# ---------------------------------------------------------------- medieval life (host)
+var life_t := []
+var life_log := []
+
+
+func trait_has(t: int, id: String) -> bool:
+	return t == my_team and king_trait == id
+
+
+func ai_extra(t: int) -> float:
+	# difficulty: the computer kingdoms earn more (hard) or less (easy) gold
+	if t == my_team or net.online:
+		return 0.0
+	match king_diff:
+		"easy":
+			return -0.35
+		"hard":
+			return 0.55
+	return 0.0
+
+
+func build_mult(t: int) -> float:
+	return 1.5 if trait_has(t, "builder") else 1.0
+
+
+func forge_cost(which: String, lvl: int) -> Dictionary:
+	var n := lvl + 1
+	if which == "w":
+		return {"gold": 60 * n, "iron": 15 * n, "stone": 0}
+	return {"gold": 50 * n, "iron": 12 * n, "stone": 15 * n}
+
+
+func dmg_mult(t: int, kind: String) -> float:
+	if kind == "hero" or kind == "villager" or t < 0 or t >= forge_w.size():
+		return 1.0
+	return 1.0 + 0.15 * float(forge_w[t]) + (0.1 if trait_has(t, "warlord") else 0.0)
+
+
+func armor_mult(t: int, kind: String) -> float:
+	if kind == "hero" or kind == "villager" or t < 0 or t >= forge_a.size():
+		return 1.0
+	return 1.0 - 0.12 * float(forge_a[t])
+
+
+# ---------------------------------------------------------------- renown, achievements, daily decree (local)
+func _prog(dt: float) -> void:
+	prog_t -= dt
+	if prog_t > 0.0 or battle.over or battle.intro:
+		return
+	prog_t = 2.0
+	var t := my_team
+	if t < 0 or t >= nk or fallen[t]:
+		return
+	var ids := {}
+	var total := 0
+	var kinds := {}
+	for b in town.bld[t]:
+		if float(b.prog) >= 1.0:
+			total += 1
+			kinds[String(b.type)] = true
+	if total >= 10:
+		ids["builder10"] = true
+	if kinds.size() >= 12:
+		ids["town12"] = true
+	if grain[t] >= 250.0:
+		ids["granary"] = true
+	if gold[t] >= 1500.0:
+		ids["rich"] = true
+	if forge_w[t] >= 3 or forge_a[t] >= 3:
+		ids["ironwill"] = true
+	if soldier_n[t] >= 40:
+		ids["army40"] = true
+	if level[t] >= 3:
+		ids["castle3"] = true
+	if ship_n[t] >= 3:
+		ids["fleet"] = true
+	for u in battle.by_team[t]:
+		if u.rank_lv >= 3 and not u.dead:
+			ids["veteran"] = true
+			break
+	for id in ids.keys():
+		if ProfS.unlock(String(id)):
+			var a: Dictionary = ProfS.ACH[id]
+			battle._toast(LocS.t("Achievement unlocked:") + " " + LocS.t(String(a.name)) + "  +%d" % int(a.r), 3.5)
+			battle.sfx.play_ui("ding")
+	# daily decree
+	if not ProfS.daily_done:
+		var dd: Dictionary = ProfS.daily_today()
+		var ok := false
+		match String(dd.id):
+			"farms3":
+				ok = town.count(t, "farm") >= 3
+			"army20":
+				ok = soldier_n[t] >= 20
+			"gold800":
+				ok = gold[t] >= 800.0
+			"houses8":
+				ok = town.count(t, "house") >= 8
+			"forge2":
+				ok = forge_w[t] >= 2
+			"bread":
+				ok = town.count(t, "mill") > 0 and town.count(t, "bakery") > 0
+		if ok:
+			ProfS.daily_done = true
+			var up := ProfS.add_renown(int(dd.r))
+			battle._toast(LocS.t("Royal decree fulfilled!") + "  +%d" % int(dd.r), 3.5)
+			battle.sfx.play_ui("ding")
+			if up != "":
+				battle._toast(LocS.t("New rank:") + " " + LocS.t(up), 3.5)
+
+
+func _life(t: int, dt: float) -> void:
+	while life_t.size() < nk:
+		life_t.append(100.0 + randf() * 60.0)
+	life_t[t] = float(life_t[t]) - dt
+	if float(life_t[t]) > 0.0 or battle.game_time < 100.0:
+		return
+	life_t[t] = 70.0 + randf() * 70.0
+	var r := randf()
+	var has_well: bool = town.count(t, "well") > 0
+	var has_church: bool = town.count(t, "church") > 0
+	var has_market: bool = town.count(t, "market") > 0
+	var seas := season()
+	if r < 0.22:
+		# fire: a wooden building burns down unless a well stops it
+		if has_well and randf() < 0.75:
+			toast_team(t, "A fire broke out, but the well saved the town!")
+			return
+		var cand := []
+		for b in town.bld[t]:
+			if String(b.type) in ["house", "woodcutter", "hunter", "farm", "mill", "bakery", "stable", "storehouse"] and float(b.prog) >= 1.0:
+				cand.append(b)
+		if cand.size() > 2:
+			var b: Dictionary = cand[randi() % cand.size()]
+			ev_all("fire", {"x": town.world(t, float(b.lx), float(b.d)).x, "z": town.world(t, float(b.lx), float(b.d)).z})
+			town.destroy(t, int(b.id))
+			toast_team(t, "Fire! A building burned down.")
+	elif r < 0.40:
+		# plague: villagers fall sick (a church helps)
+		if has_church and randf() < 0.7:
+			toast_team(t, "Sickness spread, but the priests healed the sick.")
+			return
+		var vs := []
+		for u in battle.by_team[t]:
+			if u.kind == "villager" and not u.dead:
+				vs.append(u)
+		if vs.size() > 3:
+			var n: int = mini(2, vs.size() - 3)
+			for i in n:
+				vs[i].take_damage(999.0)
+			toast_team(t, "Plague! Some villagers died.")
+	elif r < 0.62:
+		# travelling merchants
+		var g := 70.0 + randf() * 90.0
+		if has_market:
+			g *= 1.6
+		gold[t] += g
+		if randf() < 0.5:
+			iron[t] = minf(iron[t] + 12.0, 600.0)
+		toast_team(t, "A merchant caravan arrived and paid you gold.")
+	elif r < 0.78:
+		if seas == 2 or seas == 0:
+			grain[t] = minf(grain[t] + 80.0, 600.0)
+			toast_team(t, "A rich harvest! Extra grain in the barns.")
+		else:
+			food[t] += 25.0
+			toast_team(t, "Hunters had a lucky day: extra food.")
+	elif r < 0.9:
+		# bandits on the roads
+		if soldier_n[t] < 3 and gold[t] > 120.0:
+			var loss := minf(gold[t] * 0.2, 150.0)
+			gold[t] -= loss
+			toast_team(t, "Bandits robbed a caravan! Soldiers would have stopped them.")
+		else:
+			toast_team(t, "Your soldiers drove off bandits.")
+	else:
+		# village festival: calm and a little gold
+		food[t] = maxf(0.0, food[t] - 12.0)
+		gold[t] += 40.0
+		toast_team(t, "A village festival! The people are happy.")
+
+
+
 func _spawn_trained(t: int, item: Dictionary) -> void:
 	var kind: String = item.kind
 	var owner: int = item.owner
@@ -1266,9 +1700,9 @@ func _spawn_trained(t: int, item: Dictionary) -> void:
 		battle._make_unit("villager", t, owner, p)
 		return
 	var bpos := depot(t)
-	for i in NSLOTS:
-		if int(slots[t][i]) == 2:
-			bpos = plot_pos(t, i) + battle.rotv(t, Vector3(0, 0, 5.0))
+	for bb in town.bld[t]:
+		if bb.type == "barracks" and float(bb.prog) >= 1.0:
+			bpos = town.world(t, float(bb.lx), float(bb.d) - 5.2)
 			break
 	var u = battle._make_unit(kind, t, owner, bpos + battle.rotv(t, Vector3(randf_range(-1.5, 1.5), 0, 0)))
 	var n := 0
@@ -1425,39 +1859,35 @@ func _tick_duel(dt: float) -> void:
 			if ka != null and kb != null and not battle.duel_active:
 				ka.position = Vector3(-5.0, 0.0, 0.0)
 				kb.position = Vector3(5.0, 0.0, 0.0)
-	if not battle.war or duel_done or battle.over:
+	# no separate duel arena any more: when the two kings meet in the war and trade blows,
+	# their swords lock (see clash.gd) and the winner decides the loser's fate
+	if not battle.war or battle.over:
 		return
-	if not battle.duel_active:
-		for pk in war_pairs.keys():
-			var ta: int = int(pk) / 10
-			var tb: int = int(pk) % 10
-			var a = battle.team_king(ta)
-			var b = battle.team_king(tb)
-			if a != null and b != null and a.position.distance_to(b.position) < DUEL_TRIGGER and not inside_any(a.position) and not inside_any(b.position):
-				var c: Vector3 = (a.position + b.position) * 0.5
-				c.y = 0.0
-				battle.duel_center = c
-				battle.duel_r = DUEL_R0
-				battle.duel_active = true
-				battle.duel_teams = [ta, tb]
-				battle.freeze_others = true
-				duel_t = 0.0
-				for k in [a, b]:
-					var off: Vector3 = k.position - c
-					off.y = 0.0
-					if off.length() > DUEL_R0 - 1.0:
-						k.position = c + off.normalized() * (DUEL_R0 - 1.0)
-				ev_all("duel_start", {"c": c, "a": ta, "b": tb})
-				break
+	if clash == null:
+		clash = preload("res://game/clash.gd").new()
+		clash.battle = battle
+		clash.kingdom = self
+		battle.add_child(clash)
+	clash.update(dt)
+
+
+# the loser lives (spared or captured): same ending as a fallen king, without the death
+func duel_end_manual(loser_t: int, winner_t: int) -> void:
+	if battle.duel_active:
+		battle.duel_active = false
+		battle.freeze_others = false
+		duel_done = true
+		ev_all("duel_end", {"loser": loser_t})
+	if nk == 2:
+		battle.finish(winner_t, "duel")
 	else:
-		duel_t += dt
-		battle.duel_r = lerpf(DUEL_R0, DUEL_R1, clampf(duel_t / DUEL_SHRINK, 0.0, 1.0))
+		damage_castle(loser_t, 1e9, winner_t)
 
 
 func on_king_death(u) -> void:
 	if not is_srv:
 		return
-	if battle.duel_active:
+	if battle.duel_active or final_team == u.team:
 		battle.duel_active = false
 		battle.freeze_others = false
 		duel_done = true
@@ -1542,6 +1972,41 @@ func _duel_visual_end() -> void:
 
 
 # ================================================================== AI king (host)
+const AI_PLAN := [
+	["woodcutter", 1, 1], ["farm", 1, 1], ["hunter", 1, 1], ["house", 3, 1], ["woodcutter", 2, 1], ["quarry", 1, 1], ["barracks", 1, 1], ["mill", 1, 1], ["bakery", 1, 1],
+	["barracks", 1, 1], ["house", 4, 1], ["mine", 1, 1], ["smithy", 1, 1], ["woodcutter", 2, 1], ["farm", 2, 1],
+	["house", 6, 1], ["market", 1, 1], ["quarry", 2, 2], ["mine", 2, 2], ["storehouse", 1, 2], ["house", 8, 2],
+	["church", 1, 2], ["stable", 1, 3], ["farm", 3, 2], ["house", 10, 3], ["barracks", 2, 3], ["bakery", 2, 3], ["mill", 2, 3], ["well", 1, 2],
+]
+
+
+func _ai_build(t: int, owner: int) -> bool:
+	var open_sites := 0
+	for b in town.bld[t]:
+		if float(b.prog) < 1.0:
+			open_sites += 1
+	if open_sites >= 2:
+		return false
+	for e in AI_PLAN:
+		var type: String = e[0]
+		if level[t] < int(e[2]):
+			continue
+		if town.count(t, type, false) >= int(e[1]):
+			continue
+		var def: Dictionary = TownS.DEFS[type]
+		if not town.afford(t, def.cost):
+			# save up for it, unless something cheap and useful is missing
+			return false
+		if town.missing_for(t, type) != "":
+			continue
+		var sp: Vector2 = town.find_spot(t, type)
+		if sp.x < -900.0:
+			continue
+		_cmd(owner, "build", {"type": type, "lx": sp.x, "d": sp.y})
+		return true
+	return false
+
+
 func _ai_tick(t: int) -> void:
 	var owner := -100 - t
 	var lv: int = level[t]
@@ -1557,29 +2022,31 @@ func _ai_tick(t: int) -> void:
 	var my_foes: Array = battle.foes_of(t)
 	if float(decree_cd[t].feast) <= 0.0 and not my_foes.is_empty() and food[t] > 120:
 		_cmd(owner, "feast", {})
+	# merchant caravans: the AI turns spare gold into timber and bread (no market micro-management)
+	if float(info.get("cara", 0.0)) <= battle.game_time and gold[t] > 250.0 and (wood[t] < 50.0 or food[t] < 20.0):
+		info["cara"] = battle.game_time + 20.0
+		gold[t] -= 60.0
+		if wood[t] < 50.0:
+			wood[t] += 45.0
+		if food[t] < 20.0:
+			food[t] += 30.0
 	var actions := 0
 	# villagers
 	var want_v := 5 + 2 * lv
 	if vill_n[t] + queued(t, "villager") < want_v and food[t] >= VILLAGER_FOOD and pop_used[t] < pop_cap(t):
 		_cmd(owner, "villager", {})
 		actions += 1
-	# housing
-	if actions < 2 and (pop_used[t] >= pop_cap(t) - 2 or houses < 2 + lv * 2) and gold[t] >= HOUSE_COST and free_slot(t, HOUSE_ORDER) >= 0:
-		if barr >= 1 or houses < 4 or gold[t] > HOUSE_COST + 60:
-			_cmd(owner, "house", {})
-			actions += 1
+	# economy: build the town step by step
+	if actions < 2 and _ai_build(t, owner):
+		actions += 1
 	# castle upgrade
-	if actions < 2 and lv < 3 and houses >= 2 + 2 * lv:
+	if actions < 2 and lv < 3 and houses >= 2 + 2 * lv and barr >= 1:
 		var cost: Array = UPGRADE[lv - 1]
 		if gold[t] >= cost[0] and food[t] >= cost[1]:
 			_cmd(owner, "upgrade", {})
 			actions += 1
-	# barracks
-	if actions < 2 and barr < (1 if lv < 3 else 2) and houses >= 3 and gold[t] >= BARRACKS_COST + 20:
-		_cmd(owner, "barracks", {})
-		actions += 1
 	# recruit
-	if actions < 2 and barr >= 1 and vill_n[t] >= 3:
+	if actions < 2 and barr >= 1 and vill_n[t] >= 3 and food[t] > 30.0:
 		var roll := randf()
 		var kind := "sword"
 		if lv >= 3 and roll > 0.93:
@@ -1590,11 +2057,36 @@ func _ai_tick(t: int) -> void:
 			kind = "cav"
 		elif lv >= 2 and roll > 0.45:
 			kind = "archer"
+		if train_block(t, kind) != "":
+			kind = "archer" if (lv >= 2 and train_block(t, "archer") == "") else "sword"
 		var inf: Array = TRAIN[kind]
-		if gold[t] >= inf[0] and food[t] >= inf[1] + 10 and pop_used[t] < pop_cap(t):
+		if train_block(t, kind) == "" and gold[t] >= inf[0] and food[t] >= inf[1] + 10 and pop_used[t] < pop_cap(t):
 			_cmd(owner, "train", {"kind": kind})
+	# smith: better weapons and armour once the town is rich enough
+	if actions < 2 and lv >= 2 and town.count(t, "smithy") > 0:
+		var wk := "w" if forge_w[t] <= forge_a[t] else "a"
+		var lvf: int = forge_w[t] if wk == "w" else forge_a[t]
+		if lvf < 3:
+			var cf := forge_cost(wk, lvf)
+			if gold[t] > float(cf.gold) + 150.0 and iron[t] >= float(cf.iron) and stone[t] >= float(cf.stone):
+				_cmd(owner, "forge", {"w": wk})
+	# navy (island map)
+	if battle.sea and lv >= 2 and actions < 2 and barr >= 1:
+		if not yard[t]:
+			if gold[t] >= YARD_GOLD + 40 and wood[t] >= YARD_WOOD:
+				_cmd(owner, "shipyard", {})
+		elif fsh_n[t] < 2 and gold[t] > FISHER_GOLD + 60:
+			_cmd(owner, "ship", {"type": "fisher"})
+		elif not my_foes.is_empty() and ship_n[t] < MAX_SHIPS and gold[t] > SHIP_GOLD + 80:
+			_cmd(owner, "ship", {"type": "ship"})
+	if battle.sea and not my_foes.is_empty() and yard[t]:
+		var eft: int = battle.foe(t)
+		for e in battle.by_team[t]:
+			if e.kind == "ship" and not e.dead and not e.has_dest and battle.game_time > 200.0:
+				e.dest = battle.keep_on_sea(dock_pos(eft) + battle.rotv(eft, Vector3(randf_range(-14.0, 14.0), 0, 18.0)))
+				e.has_dest = true
 	# food buying when starving
-	if food[t] < 15 and gold[t] > 90:
+	if food[t] < 15 and gold[t] > 90 and town.count(t, "market") > 0:
 		_cmd(owner, "buyfood", {})
 	# army orders once the war has begun
 	if not my_foes.is_empty():
@@ -1664,40 +2156,49 @@ func _theme(u: float) -> Theme:
 		s.content_margin_top = 6 * u
 		s.content_margin_bottom = 6 * u
 		return s
-	th.set_stylebox("normal", "Button", sb.call(Color(0.14, 0.12, 0.1, 0.92), Color(0.75, 0.6, 0.25)))
-	th.set_stylebox("hover", "Button", sb.call(Color(0.24, 0.2, 0.14, 0.95), Color(1.0, 0.8, 0.3)))
-	th.set_stylebox("pressed", "Button", sb.call(Color(0.5, 0.38, 0.12, 0.98), Color(1.0, 0.85, 0.4)))
-	th.set_stylebox("disabled", "Button", sb.call(Color(0.1, 0.1, 0.1, 0.8), Color(0.3, 0.3, 0.3)))
-	th.set_color("font_color", "Button", Color(1.0, 0.93, 0.75))
-	th.set_color("font_disabled_color", "Button", Color(0.5, 0.5, 0.5))
-	th.set_color("font_hover_color", "Button", Color.WHITE)
-	th.set_color("font_pressed_color", "Button", Color.WHITE)
-	th.set_stylebox("panel", "PanelContainer", sb.call(Color(0.07, 0.06, 0.08, 0.93), Color(0.75, 0.6, 0.25)))
-	return th
-
-
-# Coloured HUD button: rounded, glowing border in the accent colour
-func style_btn(b: Button, col: Color, u: float) -> void:
-	var mk := func(bg: Color, bd: Color, bw: float) -> StyleBoxFlat:
-		var s := StyleBoxFlat.new()
-		s.bg_color = bg
-		s.border_color = bd
-		s.set_border_width_all(int(bw * u))
-		s.set_corner_radius_all(int(16 * u))
-		s.shadow_color = Color(col.r, col.g, col.b, 0.45)
-		s.shadow_size = int(7 * u)
+	var UiFx2 := preload("res://game/uifx.gd")
+	var fx := func(state: String) -> StyleBoxTexture:
+		var s: StyleBoxTexture = UiFx2.button(state)
 		s.content_margin_left = 10 * u
 		s.content_margin_right = 10 * u
 		s.content_margin_top = 6 * u
 		s.content_margin_bottom = 6 * u
 		return s
-	b.add_theme_stylebox_override("normal", mk.call(Color(col.r * 0.28, col.g * 0.28, col.b * 0.28, 0.93), col, 3.0))
-	b.add_theme_stylebox_override("hover", mk.call(Color(col.r * 0.45, col.g * 0.45, col.b * 0.45, 0.97), col.lightened(0.3), 3.0))
-	b.add_theme_stylebox_override("pressed", mk.call(Color(col.r * 0.7, col.g * 0.7, col.b * 0.7, 1.0), Color.WHITE, 3.0))
-	b.add_theme_color_override("font_color", Color(1, 0.97, 0.88))
-	b.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
-	b.add_theme_constant_override("outline_size", int(4 * u))
-	b.add_theme_font_size_override("font_size", int(24 * u))
+	th.set_stylebox("normal", "Button", fx.call("normal"))
+	th.set_stylebox("hover", "Button", fx.call("hover"))
+	th.set_stylebox("pressed", "Button", fx.call("pressed"))
+	th.set_stylebox("disabled", "Button", fx.call("disabled"))
+	th.set_color("font_color", "Button", Color(1.0, 0.93, 0.75))
+	th.set_color("font_disabled_color", "Button", Color(0.5, 0.5, 0.5))
+	th.set_color("font_hover_color", "Button", Color.WHITE)
+	th.set_color("font_pressed_color", "Button", Color.WHITE)
+	var pn: StyleBoxTexture = UiFx2.panel()
+	pn.content_margin_left = 22 * u
+	pn.content_margin_right = 22 * u
+	pn.content_margin_top = 18 * u
+	pn.content_margin_bottom = 18 * u
+	th.set_stylebox("panel", "PanelContainer", pn)
+	return th
+
+
+# Coloured HUD button: rounded, glowing border in the accent colour
+# compact size for the top HUD row
+func _small(b: Button, u: float) -> void:
+	b.add_theme_font_size_override("font_size", int(17 * u))
+	b.add_theme_constant_override("outline_size", int(3 * u))
+	b.add_theme_constant_override("icon_max_width", int(22 * u))
+	b.add_theme_constant_override("h_separation", int(4 * u))
+	for st in ["normal", "hover", "pressed"]:
+		var sb = b.get_theme_stylebox(st)
+		if sb is StyleBoxTexture:
+			sb.content_margin_left = 6 * u
+			sb.content_margin_right = 6 * u
+			sb.content_margin_top = 2 * u
+			sb.content_margin_bottom = 2 * u
+
+
+func style_btn(b: Button, _c: Color, u: float, icon := "") -> void:
+	preload("res://game/uifx.gd").style_btn(b, u, icon)
 
 
 func _parch(u: float) -> StyleBoxFlat:
@@ -1736,20 +2237,50 @@ func _build_ui() -> void:
 	ui["root"] = root
 	var rl := Label.new()
 	rl.position = Vector2(20, 84) * u
-	rl.add_theme_font_size_override("font_size", int(23 * u))
+	rl.add_theme_font_size_override("font_size", int(20 * u))
 	rl.add_theme_color_override("font_color", Color(1.0, 0.9, 0.55))
 	rl.add_theme_color_override("font_outline_color", Color.BLACK)
 	rl.add_theme_constant_override("outline_size", int(6 * u))
 	root.add_child(rl)
+	rl.visible = false
 	ui["res"] = rl
+	var UiFxR := preload("res://game/uifx.gd")
+	var rv := VBoxContainer.new()
+	rv.position = Vector2(12, 62) * u
+	rv.add_theme_constant_override("separation", int(4 * u))
+	rv.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(rv)
+	ui["chips"] = {}
+	var rows := [[["gold", "coin", 100.0, Color(1, 0.9, 0.5)], ["food", "food", 92.0, Color(1, 0.8, 0.75)], ["pop", "pop", 100.0, Color(0.85, 0.92, 1)], ["vill", "vill", 76.0, Color(0.85, 1, 0.8)], ["level", "level", 66.0, Color(1, 0.85, 0.4)]],
+		[["wood", "wood", 82.0, Color(1, 0.88, 0.7)], ["stone", "stone", 82.0, Color(0.88, 0.9, 0.95)], ["iron", "iron", 76.0, Color(0.8, 0.88, 1.0)], ["grain", "grain", 76.0, Color(1, 0.92, 0.6)], ["flour", "flour", 76.0, Color(1, 1, 0.9)], ["season", "season", 104.0, Color(1, 0.95, 0.7)]]]
+	for row in rows:
+		var rh := HBoxContainer.new()
+		rh.add_theme_constant_override("separation", int(4 * u))
+		rh.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		rv.add_child(rh)
+		for c in row:
+			var ch: Dictionary = UiFxR.chip(c[1], u, c[2], c[3])
+			rh.add_child(ch.box)
+			ui.chips[c[0]] = ch.lbl
+	var bld_btn := Button.new()
+	bld_btn.text = "BUILD"
+	bld_btn.position = Vector2(148, 148) * u
+	bld_btn.size = Vector2(124, 44) * u
+	bld_btn.pressed.connect(func(): town.ui.open_menu())
+	root.add_child(bld_btn)
+	style_btn(bld_btn, Color(0.9, 0.65, 0.25), u, "hammer")
+	_small(bld_btn, u)
+	ui["build"] = bld_btn
 	var city := Button.new()
 	city.text = "CITY"
-	city.position = Vector2(20, 122) * u
-	city.size = Vector2(150, 58) * u
+	city.position = Vector2(20, 148) * u
+	city.size = Vector2(120, 44) * u
 	city.pressed.connect(_toggle_panel)
 	root.add_child(city)
-	style_btn(city, Color(0.35, 0.8, 0.4), u)
+	style_btn(city, Color(0.35, 0.8, 0.4), u, "city")
+	_small(city, u)
 	ui["city"] = city
+	town.build_ui(root, u, vs)
 	# castle bars + status
 	var cx := vs.x * 0.5
 	var mk_bar := func(x: float, col: Color, title: String) -> ProgressBar:
@@ -1782,7 +2313,7 @@ func _build_ui() -> void:
 			ch.visible = false
 	# list of all kingdoms (top right)
 	var kl := VBoxContainer.new()
-	kl.position = Vector2(20 * u, 264 * u)
+	kl.position = Vector2(20 * u, 300 * u)
 	kl.add_theme_constant_override("separation", int(2 * u))
 	kl.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root.add_child(kl)
@@ -1799,8 +2330,13 @@ func _build_ui() -> void:
 			kl.add_child(rl2)
 			ui["krows"].append(rl2)
 	var st := Label.new()
-	st.position = Vector2(cx - 120 * u, 52 * u)
-	st.size = Vector2(240, 30) * u
+	st.position = Vector2(cx - 100 * u, 10 * u)
+	st.size = Vector2(200, 38) * u
+	st.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	var stp: StyleBoxFlat = preload("res://game/uifx.gd").plate(18.0 * u, 0.82)
+	stp.content_margin_top = 2 * u
+	stp.content_margin_bottom = 4 * u
+	st.add_theme_stylebox_override("normal", stp)
 	st.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	st.add_theme_font_size_override("font_size", int(22 * u))
 	st.add_theme_color_override("font_outline_color", Color.BLACK)
@@ -1857,13 +2393,21 @@ func _build_ui() -> void:
 		b.pressed.connect(cb)
 		parent.add_child(b)
 		ui[key] = b
+		var icm := {"b_vill": "vill", "b_food": "food", "b_build": "hammer", "b_upg2": "season", "b_up": "level", "b_repair": "hammer", "b_fw": "sword", "b_fa": "army", "b_sword": "sword", "b_archer": "bow", "b_cav": "horse", "b_ballista": "bow", "b_catapult": "stone", "b_ship": "wood"}
+		if icm.has(key):
+			b.icon = preload("res://game/uifx.gd").icon(icm[key], int(44 * u))
+			b.expand_icon = true
+			b.add_theme_constant_override("icon_max_width", int(30 * u))
+			b.add_theme_constant_override("h_separation", int(8 * u))
 		return b
 	mkb.call(g1, "b_vill", func(): cmd("villager"), 318.0)
 	mkb.call(g1, "b_food", func(): cmd("buyfood"), 318.0)
-	mkb.call(g1, "b_house", func(): cmd("house"), 318.0)
-	mkb.call(g1, "b_barr", func(): cmd("barracks"), 318.0)
+	mkb.call(g1, "b_build", func(): _toggle_panel(); town.ui.open_menu(), 318.0)
+	mkb.call(g1, "b_upg2", func(): cmd("upgrade"), 318.0)
 	mkb.call(g1, "b_up", func(): cmd("upgrade"), 318.0)
 	mkb.call(g1, "b_repair", func(): cmd("repair"), 318.0)
+	mkb.call(g1, "b_fw", func(): cmd("forge", {"w": "w"}), 318.0)
+	mkb.call(g1, "b_fa", func(): cmd("forge", {"w": "a"}), 318.0)
 	_label(vb, "TRAIN SOLDIERS", int(20 * u), Color(0.8, 0.8, 0.85))
 	var g2 := HBoxContainer.new()
 	g2.add_theme_constant_override("separation", int(8 * u))
@@ -1880,8 +2424,23 @@ func _build_ui() -> void:
 	var g2c := HBoxContainer.new()
 	g2c.add_theme_constant_override("separation", int(8 * u))
 	vb.add_child(g2c)
-	mkb.call(g2c, "b_planks", func(): cmd("planks"), 318.0)
-	mkb.call(g2c, "b_ship", func(): cmd("ship"), 318.0)
+	var gtr := GridContainer.new()
+	gtr.columns = 2
+	gtr.add_theme_constant_override("h_separation", int(8 * u))
+	gtr.add_theme_constant_override("v_separation", int(8 * u))
+	_label(vb, "MARKET", int(20 * u), Color(0.8, 0.8, 0.85))
+	vb.add_child(gtr)
+	for tk in ["wood", "stone", "iron", "grain"]:
+		var key: String = tk
+		mkb.call(gtr, "t_%s_s" % key, func(): cmd("trade", {"res": key, "buy": false}), 318.0)
+		mkb.call(gtr, "t_%s_b" % key, func(): cmd("trade", {"res": key, "buy": true}), 318.0)
+	mkb.call(g2c, "b_yard", func(): cmd("shipyard"), 318.0)
+	mkb.call(g2c, "b_ship", func(): cmd("ship", {"type": "ship"}), 318.0)
+	var g2d := HBoxContainer.new()
+	g2d.add_theme_constant_override("separation", int(8 * u))
+	vb.add_child(g2d)
+	mkb.call(g2d, "b_trans", func(): cmd("ship", {"type": "transport"}), 318.0)
+	mkb.call(g2d, "b_fisher", func(): cmd("ship", {"type": "fisher"}), 318.0)
 	var g3 := HBoxContainer.new()
 	g3.add_theme_constant_override("separation", int(8 * u))
 	vb.add_child(g3)
@@ -1957,6 +2516,7 @@ func _process(dt: float) -> void:
 	if battle == null:
 		return
 	_tick_messengers(dt)
+	_prog(dt)
 	gate_t -= dt
 	if gate_t <= 0.0:
 		gate_t = 0.15
@@ -1981,7 +2541,19 @@ func _update_ui(force: bool) -> void:
 	var t := vteam()
 	var houses := count_slots(t, 1)
 	var res: Label = ui.res
-	res.text = LocS.t("GOLD %d    FOOD %d    WOOD %d    POP %d/%d    VILLAGERS %d    LV %d" % [int(gold[t]), int(food[t]), int(wood[t]), pop_used[t], pop_cap(t), vill_n[t], level[t]])
+	var cwl: Dictionary = ui.chips
+	cwl.gold.text = str(int(gold[t]))
+	cwl.food.text = str(int(food[t]))
+	cwl.pop.text = "%d/%d" % [pop_used[t], pop_cap(t)]
+	cwl.vill.text = str(vill_n[t])
+	cwl.level.text = str(level[t])
+	cwl.wood.text = str(int(wood[t]))
+	cwl.stone.text = str(int(stone[t]))
+	cwl.iron.text = str(int(iron[t]))
+	cwl.grain.text = str(int(grain[t]))
+	cwl.flour.text = str(int(flour[t]))
+	cwl.season.text = LocS.t(season_name())
+	res.text = LocS.t("GOLD %d    FOOD %d    POP %d/%d    VILLAGERS %d    LV %d" % [int(gold[t]), int(food[t]), pop_used[t], pop_cap(t), vill_n[t], level[t]]) + "\n" + LocS.t("WOOD %d   STONE %d   IRON %d   GRAIN %d   FLOUR %d" % [int(wood[t]), int(stone[t]), int(iron[t]), int(grain[t]), int(flour[t])]) + "   " + LocS.t(season_name())
 	var bm: ProgressBar = ui.bar_me
 	var bf: ProgressBar = ui.bar_foe
 	bm.max_value = CASTLE_HP[level[t] - 1]
@@ -2024,10 +2596,19 @@ func _update_ui(force: bool) -> void:
 		b.disabled = not ok
 	var cap := pop_cap(t)
 	set_b.call("b_vill", "Hire Villager\n%d food" % VILLAGER_FOOD, food[t] >= VILLAGER_FOOD and pop_used[t] < cap)
-	set_b.call("b_food", "Buy Food\n%d gold -> %d food" % [BUY_GOLD, BUY_FOOD], gold[t] >= BUY_GOLD)
-	set_b.call("b_house", "Build House (%d/%d)\n%d gold" % [used_slots(t), SLOT_LIMIT[level[t] - 1], HOUSE_COST], gold[t] >= HOUSE_COST and free_slot(t, HOUSE_ORDER) >= 0)
-	var maxb := 1 if level[t] < 3 else 2
-	set_b.call("b_barr", "Barracks (%d/%d)\n%d gold" % [count_slots(t, 2), maxb, BARRACKS_COST], gold[t] >= BARRACKS_COST and count_slots(t, 2) < maxb and free_slot(t, BARRACKS_ORDER) >= 0)
+	set_b.call("b_food", "Buy Food\n%d gold -> %d food" % [BUY_GOLD, BUY_FOOD], gold[t] >= BUY_GOLD and town.count(t, "market") > 0)
+	set_b.call("b_build", "Build Town\nhouses, farms, mines...", true)
+	set_b.call("b_upg2", LocS.t("Season:") + " " + LocS.t(season_name()), false)
+	for tk2 in TRADE.keys():
+		var tr2: Array = TRADE[tk2]
+		var mk_ok: bool = town.count(t, "market") > 0
+		set_b.call("t_%s_s" % tk2, LocS.t("Sell") + " %d %s\n+%d " % [tr2[0], LocS.t(tk2), tr2[1]] + LocS.t("gold"), mk_ok and res_get(t, tk2) >= float(tr2[0]))
+		set_b.call("t_%s_b" % tk2, LocS.t("Buy") + " %d %s\n-%d " % [tr2[0], LocS.t(tk2), tr2[2]] + LocS.t("gold"), mk_ok and gold[t] >= float(tr2[2]))
+	var smi: bool = town.count(t, "smithy") > 0
+	var cw := forge_cost("w", mini(forge_w[t], 2))
+	var ca := forge_cost("a", mini(forge_a[t], 2))
+	set_b.call("b_fw", LocS.t("Sharper Weapons") + " %d/3\n" % forge_w[t] + ("%d " % cw.iron + LocS.t("iron") + "  %d " % cw.gold + LocS.t("gold") if forge_w[t] < 3 else LocS.t("maximum reached")), smi and forge_w[t] < 3 and gold[t] >= float(cw.gold) and iron[t] >= float(cw.iron))
+	set_b.call("b_fa", LocS.t("Stronger Armour") + " %d/3\n" % forge_a[t] + ("%d " % ca.iron + LocS.t("iron") + "  %d " % ca.stone + LocS.t("stone") + "  %d " % ca.gold + LocS.t("gold") if forge_a[t] < 3 else LocS.t("maximum reached")), smi and forge_a[t] < 3 and gold[t] >= float(ca.gold) and iron[t] >= float(ca.iron) and stone[t] >= float(ca.stone))
 	set_b.call("b_repair", "Repair Walls\n%d gold -> fixes a quarter" % REPAIR_COST, gold[t] >= REPAIR_COST and castle_hp[t] < CASTLE_HP[level[t] - 1] - 1.0)
 	var stl: Label = ui.stats
 	stl.text = LocS.t("Castle level %d   Soldiers %d   Houses %d   Villagers %d" % [level[t], soldier_n[t], count_slots(t, 1), vill_n[t]])
@@ -2039,24 +2620,44 @@ func _update_ui(force: bool) -> void:
 		set_b.call("b_up", "Develop Castle -> Lv%d\n%d gold, %d food" % [level[t] + 1, c[0], c[1]], gold[t] >= c[0] and food[t] >= c[1])
 	else:
 		set_b.call("b_up", "Castle at max level", false)
-	var barr_ok: bool = count_slots(t, 2) >= 1 and pop_used[t] < cap
+	var barr_ok: bool = pop_used[t] < cap
 	for pair in [["b_sword", "sword", "Swordsman"], ["b_archer", "archer", "Archer"], ["b_cav", "cav", "Cavalry"]]:
 		var inf: Array = TRAIN[pair[1]]
 		var txt: String = "%s\n%dg %df" % [pair[2], inf[0], inf[1]]
 		if level[t] < inf[3]:
 			txt = "%s\nCastle Lv%d" % [pair[2], inf[3]]
-		set_b.call(pair[0], txt, barr_ok and level[t] >= inf[3] and gold[t] >= inf[0] and food[t] >= inf[1])
+		var tbk: String = train_block(t, pair[1])
+		var xs := _extra_text(pair[1])
+		if tbk != "":
+			txt = "%s\n%s" % [pair[2], tbk]
+		elif level[t] >= inf[3]:
+			txt += xs
+		set_b.call(pair[0], txt, barr_ok and tbk == "" and level[t] >= inf[3] and gold[t] >= inf[0] and food[t] >= inf[1] and _extra_ok(t, pair[1]))
 	for pair2 in [["b_ballista", "ballista", "Ballista"], ["b_catapult", "catapult", "Catapult"]]:
 		var inf2: Array = TRAIN[pair2[1]]
 		var txt2: String = "%s\n%dg %df" % [pair2[2], inf2[0], inf2[1]]
 		if level[t] < inf2[3]:
 			txt2 = "%s\nCastle Lv%d" % [pair2[2], inf2[3]]
-		set_b.call(pair2[0], txt2, barr_ok and level[t] >= inf2[3] and gold[t] >= inf2[0] and food[t] >= inf2[1])
-	set_b.call("b_planks", "Buy Planks\n%d gold -> %d planks" % [PLANK_GOLD, PLANK_WOOD], gold[t] >= PLANK_GOLD)
+		var tbk2: String = train_block(t, pair2[1])
+		if tbk2 != "":
+			txt2 = "%s\n%s" % [pair2[2], tbk2]
+		elif level[t] >= inf2[3]:
+			txt2 += _extra_text(pair2[1])
+		set_b.call(pair2[0], txt2, barr_ok and tbk2 == "" and level[t] >= inf2[3] and gold[t] >= inf2[0] and food[t] >= inf2[1] and _extra_ok(t, pair2[1]))
 	if battle.sea:
-		set_b.call("b_ship", "Build Ship (%d/%d)\n%dg %d planks" % [ship_n[t], MAX_SHIPS, SHIP_GOLD, SHIP_WOOD], level[t] >= 2 and ship_n[t] < MAX_SHIPS and gold[t] >= SHIP_GOLD and wood[t] >= SHIP_WOOD)
+		var yok: bool = yard[t]
+		if yok:
+			set_b.call("b_yard", "Shipyard\nbuilt", false)
+		else:
+			set_b.call("b_yard", "Build Shipyard\n%dg %d planks" % [YARD_GOLD, YARD_WOOD], level[t] >= 2 and gold[t] >= YARD_GOLD and wood[t] >= YARD_WOOD)
+		set_b.call("b_ship", "Warship (%d/%d)\n%dg %d planks" % [ship_n[t], MAX_SHIPS, SHIP_GOLD, SHIP_WOOD], yok and ship_n[t] < MAX_SHIPS and gold[t] >= SHIP_GOLD and wood[t] >= SHIP_WOOD)
+		set_b.call("b_trans", "Troop Ship (%d/%d)\n%dg %d planks" % [trn_n[t], MAX_TRANSPORTS, TRANSPORT_GOLD, TRANSPORT_WOOD], yok and trn_n[t] < MAX_TRANSPORTS and gold[t] >= TRANSPORT_GOLD and wood[t] >= TRANSPORT_WOOD)
+		set_b.call("b_fisher", "Fishing Boat (%d/%d)\n%dg %d planks" % [fsh_n[t], MAX_FISHERS, FISHER_GOLD, FISHER_WOOD], yok and fsh_n[t] < MAX_FISHERS and gold[t] >= FISHER_GOLD and wood[t] >= FISHER_WOOD)
 	else:
-		set_b.call("b_ship", "Ships\nIsland map only", false)
+		set_b.call("b_yard", "Shipyard\nIsland map only", false)
+		set_b.call("b_ship", "Warship\nIsland map only", false)
+		set_b.call("b_trans", "Troop Ship\nIsland map only", false)
+		set_b.call("b_fisher", "Fishing Boat\nIsland map only", false)
 	set_b.call("b_letter", "Write Letter\nsend a messenger", true)
 	var wb: Button = ui.b_war
 	var tbn: Button = ui.b_target
@@ -2200,8 +2801,8 @@ func vs_x_half(_u: float) -> float:
 func _build_admin(root: Control, u: float) -> void:
 	var b := Button.new()
 	b.text = "ADMIN"
-	b.position = Vector2(660, 122) * u
-	b.size = Vector2(150, 58) * u
+	b.position = Vector2(700, 148) * u
+	b.size = Vector2(120, 44) * u
 	b.visible = false
 	b.pressed.connect(func(): ui.apanel.visible = not ui.apanel.visible; _admin_refresh())
 	root.add_child(b)

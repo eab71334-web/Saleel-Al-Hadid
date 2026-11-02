@@ -36,6 +36,21 @@ func build_ui(root: Control, u: float, vs: Vector2) -> void:
 	open_btn.size = Vector2(190, 52) * u
 	open_btn.add_theme_font_size_override("font_size", int(20 * u))
 	open_btn.pressed.connect(toggle)
+	open_btn.position = Vector2(vs.x - 292 * u, 10 * u)
+	open_btn.size = Vector2(210, 58) * u
+	open_btn.icon = preload("res://game/uifx.gd").icon("map", int(44 * u))
+	open_btn.expand_icon = true
+	open_btn.add_theme_constant_override("icon_max_width", int(30 * u))
+	for stn in ["normal", "hover", "pressed"]:
+		var gs := StyleBoxFlat.new()
+		gs.bg_color = Color(0.1, 0.2, 0.38, 0.9) if stn != "pressed" else Color(0.2, 0.4, 0.7, 0.95)
+		gs.border_color = Color(0.95, 0.76, 0.33)
+		gs.set_border_width_all(int(3 * u))
+		gs.set_corner_radius_all(int(16 * u))
+		gs.shadow_color = Color(0, 0, 0, 0.5)
+		gs.shadow_size = int(5 * u)
+		open_btn.add_theme_stylebox_override(stn, gs)
+	open_btn.add_theme_color_override("font_color", Color(1, 0.95, 0.8))
 	root.add_child(open_btn)
 	dim = ColorRect.new()
 	dim.color = Color(0, 0, 0, 0.72)

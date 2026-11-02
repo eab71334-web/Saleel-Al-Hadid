@@ -26,7 +26,7 @@ const AR := {
 	"See everything: ": "كشف الخريطة: ", "Game speed: x%d": "سرعة اللعبة: x%d", "+500 gold, +300 food": "+500 ذهب، +300 أكل",
 	"Your kingdom has fallen. You are now watching.": "سقطت مملكتك. أنت الحين تشاهد.",
 	# menu
-	"MEDIEVAL WARS": "حروب القرون الوسطى",
+	"SALEEL AL HADID": "سليل الحديد",
 	"Swords  -  Bows  -  Kingdoms": "سيوف - أقواس - ممالك",
 	"Solo Battle (vs AI)": "معركة فردية (ضد الكمبيوتر)",
 	"Solo Kingdom (vs AI king)": "مملكة فردية (ضد ملك الكمبيوتر)",
@@ -89,7 +89,7 @@ const AR := {
 	"Updates removed. Restart the game to use the built-in version.": "تم حذف التحديثات. أعد تشغيل اللعبة.",
 	# hud
 	"Follow me": "تبعوني", "Advance": "تقدّموا", "Hold here": "اثبتوا هنا", "Charge!": "هجوم!", "Retreat": "انسحبوا",
-	"STRIKE": "اضرب", "RALLY": "تجمّع", "HORSE\nSOON": "الحصان\nقريباً", "SWD": "سيف", "ARC": "رماة", "CAV": "فرسان",
+	"STRIKE": "اضرب", "RALLY": "تجمّع", "HORSE\nSOON": "الحصان\nقريباً", "SOON": "قريباً", "MOUNT": "اركب", "SWD": "سيف", "ARC": "رماة", "CAV": "فرسان",
 	"%ds": "%d ث",
 	"YOUR SOLDIERS: %d     ENEMY: %d": "جنودك: %d     العدو: %d",
 	"YOUR ARMY: %d     ENEMY: %d": "جيشك: %d     العدو: %d",
@@ -99,7 +99,7 @@ const AR := {
 	"Pick a group, then an order. Advance to attack!": "اختر مجموعة ثم أمراً. تقدّم للهجوم!",
 	# kingdom ui
 	"YOUR CASTLE": "قلعتك", "ENEMY CASTLE": "قلعة العدو", "PEACE": "سلام", "WAR": "حرب",
-	"CITY": "المدينة", "MAP": "الخريطة", "ADVISOR": "المستشار", "MESSENGER": "الرسول", "TALK": "تكلّم",
+	"CITY": "المدينة", "MAP": "الخريطة", "ADVISOR": "المستشار", "MESSENGER": "الرسول", "STEWARD": "المشرف", "TRAINING YARD": "ساحة التدريب", "FORGE": "الحدادة", "STABLES": "الإسطبلات", "TALK": "تكلّم",
 	"TALK: MESSENGER": "كلّم الرسول", "TALK: ADVISOR": "كلّم المستشار",
 	"YOUR KINGDOM": "مملكتك", "TRAIN SOLDIERS": "تدريب الجنود", "DUEL OF KINGS": "مبارزة الملوك",
 	"GOLD %d    FOOD %d    POP %d/%d    VILLAGERS %d    LV %d": "ذهب %d    أكل %d    سكان %d/%d    فلاحين %d    مستوى %d",
@@ -269,10 +269,57 @@ static func t(s: String) -> String:
 			var g := m.get_string(i + 1)
 			args.append(int(g) if p.types[i] == "d" else t(g))
 		return String(p.ar) % args
+	if s.contains("\n"):
+		var out := []
+		var changed := false
+		for part in s.split("\n"):
+			var tp := t(part)
+			if tp != part:
+				changed = true
+			out.append(tp)
+		if changed:
+			return "\n".join(out)
 	return s
 
 
 # Translate every Label / Button / LineEdit below `n` (remembers what it already translated).
+static var _hooked := false
+
+
+# Translate every label/button the moment it is created or its text changes (no English flash).
+static func install(tree: SceneTree) -> void:
+	if _hooked:
+		return
+	_hooked = true
+	tree.node_added.connect(_on_added)
+
+
+static func _on_added(n: Node) -> void:
+	if n is Label or n is Button or n is LineEdit or n is Label3D:
+		apply_one(n)
+		if n is Control and not n.minimum_size_changed.is_connected(apply_one.bind(n)):
+			n.minimum_size_changed.connect(apply_one.bind(n))
+
+
+static func apply_one(n: Node) -> void:
+	if lang != "ar" or not is_instance_valid(n):
+		return
+	if n is Label or n is Button or n is Label3D:
+		var cur: String = n.text
+		if cur != "" and not (n.has_meta("ar_out") and n.get_meta("ar_out") == cur):
+			var tr_: String = t(cur)
+			if tr_ != cur:
+				n.text = tr_
+				n.set_meta("ar_out", tr_)
+	elif n is LineEdit:
+		var ph: String = n.placeholder_text
+		if ph != "" and not (n.has_meta("ar_out") and n.get_meta("ar_out") == ph):
+			var tp: String = t(ph)
+			if tp != ph:
+				n.placeholder_text = tp
+				n.set_meta("ar_out", tp)
+
+
 static func apply_tree(n: Node) -> void:
 	if lang != "ar":
 		return

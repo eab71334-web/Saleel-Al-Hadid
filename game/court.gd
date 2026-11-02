@@ -49,19 +49,23 @@ func build_ui(r: Control, u: float, vs: Vector2) -> void:
 		var b := Button.new()
 		b.text = text
 		b.position = pos * u
-		b.size = Vector2(150, 58) * u
+		b.size = Vector2(120, 44) * u
 		b.pressed.connect(cb)
 		root.add_child(b)
 		return b
-	var mb: Button = mk.call("MAP", Vector2(180, 122), func(): mapv.toggle())
-	kingdom.style_btn(mb, Color(0.3, 0.6, 1.0), u)
-	var ab: Button = mk.call("ADVISOR", Vector2(340, 122), func(): toggle())
-	kingdom.style_btn(ab, Color(0.7, 0.45, 0.95), u)
-	var rb: Button = mk.call("ROYAL", Vector2(500, 122), func(): toggle_royal())
-	kingdom.style_btn(rb, Color(1.0, 0.78, 0.25), u)
-	talk_btn = mk.call("TALK", Vector2(20, 186), func(): _talk())
-	kingdom.style_btn(talk_btn, Color(0.95, 0.35, 0.3), u)
-	talk_btn.size = Vector2(190, 62) * u
+	var mb: Button = mk.call("MAP", Vector2(278, 148), func(): mapv.toggle())
+	kingdom.style_btn(mb, Color(0.3, 0.6, 1.0), u, "map")
+	kingdom._small(mb, u)
+	var ab: Button = mk.call("ADVISOR", Vector2(402, 148), func(): toggle())
+	kingdom.style_btn(ab, Color(0.7, 0.45, 0.95), u, "advisor")
+	kingdom._small(ab, u)
+	var rb: Button = mk.call("ROYAL", Vector2(526, 148), func(): toggle_royal())
+	kingdom.style_btn(rb, Color(1.0, 0.78, 0.25), u, "level")
+	kingdom._small(rb, u)
+	talk_btn = mk.call("TALK", Vector2(20, 198), func(): _talk())
+	kingdom.style_btn(talk_btn, Color(0.95, 0.35, 0.3), u, "talk")
+	talk_btn.size = Vector2(210, 44) * u
+	kingdom._small(talk_btn, u)
 	talk_btn.visible = false
 	_build_royal(u, vs)
 	panel = PanelContainer.new()

@@ -1,6 +1,7 @@
 extends Node3D
 # Battle: world, armies, AI commander, camera, HUD, effects, host-authoritative networking.
 
+const UiFx := preload("res://game/uifx.gd")
 const UnitS := preload("res://game/unit.gd")
 const ArrowS := preload("res://game/arrow.gd")
 const SfxS := preload("res://game/sfx.gd")
@@ -10,12 +11,13 @@ const BattleMapS := preload("res://game/battlemap.gd")
 # Horse riding for the player is switched off until the horse models/animations are ready.
 const HORSE_RIDING := false
 
+const HINT := 58.0        # depth of the land behind each castle (fields, forest, mines)
 const FOLLOW := 0
 const ADVANCE := 1
 const HOLD := 2
 const CHARGE := 3
 const RETREAT := 4
-const KIND_IDS := ["sword", "archer", "cav", "hero", "villager", "ballista", "catapult", "ship"]
+const KIND_IDS := ["sword", "archer", "cav", "hero", "villager", "ballista", "catapult", "ship", "transport", "fisher"]
 const LocS := preload("res://game/loc.gd")
 const SettingsS := preload("res://game/settings.gd")
 const MODE_NAMES := ["Follow me", "Advance", "Hold here", "Charge!", "Retreat"]
@@ -31,6 +33,8 @@ const TEAM_COLS := [Color(0.12, 0.32, 0.95), Color(0.9, 0.12, 0.1), Color(0.14, 
 const TEAM_NAMES := ["Blue", "Red", "Green", "Yellow", "Purple", "Orange"]
 var heroes := {}
 var orders := {}
+var group_orders := {}      # owner -> {group id: {mode, pos, form}}
+var grp_t := 0.0
 var hunt := {}
 var grid := {}
 var next_id := 1
@@ -40,6 +44,7 @@ var my_team := 0
 var running := false
 var intro := true
 var over := false
+var winner_team := -1
 var cam: Camera3D
 var cam_yaw := 0.0
 var loc_t := 0.0
@@ -80,6 +85,7 @@ var duel_r := 9.5
 var duel_center := Vector3.ZERO
 var freeze_others := false
 var modal := false
+var build_cam := false
 var cine := {}
 var garrison := {}
 var sea := false          # island map: water all around, ships can sail
@@ -99,7 +105,7 @@ func _ready() -> void:
 	ring_r = 73.0 if nk <= 4 else (78.0 if nk == 5 else 92.0)
 	map_kind = String(cfg.get("map", "plains"))
 	sea = map_kind == "island" and String(cfg.get("mode", "battle")) == "kingdom"
-	coast_r = ring_r + 62.0
+	coast_r = ring_r + 62.0 + (HINT if String(cfg.get("mode", "battle")) == "kingdom" else 0.0)
 	by_team = []
 	castle_roots = []
 	for i in nk:
@@ -110,6 +116,7 @@ func _ready() -> void:
 	sfx = SfxS.new()
 	sfx.name = "Sfx"
 	add_child(sfx)
+	sfx.set_ambient("town" if String(cfg.get("mode", "battle")) == "kingdom" else "field")
 	_build_hud()
 	cam_yaw = ang(my_team)
 	if String(cfg.get("mode", "battle")) == "kingdom":
@@ -326,8 +333,9 @@ func _build_world() -> void:
 	var cm2 := _cyl(0.0, 1.7, 3.5, 10)
 	var placed := 0
 	while placed < (110 if (map_kind == "plains" or map_kind == "snow") else (22 if sea else 30)):
-		var x := rng.randf_range(-190, 190)
-		var z := rng.randf_range(-190, 190)
+		var span := 235.0 if (nk == 2 and String(cfg.get("mode", "battle")) == "kingdom") else 190.0
+		var x := rng.randf_range(-span, span)
+		var z := rng.randf_range(-span, span)
 		if sea:
 			var rr := rng.randf_range(10.0, maxf(ring_r - 26.0, 14.0))
 			var aa := rng.randf_range(0.0, TAU)
@@ -336,9 +344,9 @@ func _build_world() -> void:
 		if sea:
 			pass
 		elif nk > 2:
-			if Vector2(x, z).length() < ring_r + 78.0:
+			if Vector2(x, z).length() < ring_r + 78.0 + HINT:
 				continue
-		elif absf(x) < 108 and absf(z) < (140 if String(cfg.get("mode", "battle")) == "kingdom" else 96):
+		elif absf(x) < 108 and absf(z) < (140 + HINT + 8.0 if String(cfg.get("mode", "battle")) == "kingdom" else 96):
 			continue
 		var t := Node3D.new()
 		t.position = Vector3(x, 0, z)
@@ -441,6 +449,94 @@ func ship_shot(u, to: Vector3, splash: float, tgt) -> void:
 		arrow_fx.rpc(from, to, dur, 3)
 
 
+# ---- transports: load / unload soldiers (host executes)
+const CARGO_MAX := 12
+
+
+func load_cmd() -> void:
+	if is_srv:
+		_load_troops(ctrl_owner())
+	else:
+		load_msg.rpc_id(1)
+
+
+@rpc("any_peer", "reliable")
+func load_msg() -> void:
+	if is_srv:
+		_load_troops(multiplayer.get_remote_sender_id())
+
+
+func unload_cmd() -> void:
+	if is_srv:
+		_unload(ctrl_owner())
+	else:
+		unload_msg.rpc_id(1)
+
+
+@rpc("any_peer", "reliable")
+func unload_msg() -> void:
+	if is_srv:
+		_unload(multiplayer.get_remote_sender_id())
+
+
+func _load_troops(owner: int) -> void:
+	if kingdom == null:
+		return
+	var t: int = kingdom.team_of(owner)
+	var n := 0
+	for s in by_team[t]:
+		if s.kind != "transport" or s.dead:
+			continue
+		for u in by_team[t]:
+			if s.cargo.size() >= CARGO_MAX:
+				break
+			if u.dead or u.loaded != null or u.is_ship or u.kind == "villager" or u.kind == "hero" \
+					or u.kind == "ballista" or u.kind == "catapult" or u.aboard != null:
+				continue
+			if Vector2(u.position.x - s.position.x, u.position.z - s.position.z).length() > 34.0:
+				continue
+			u.loaded = s
+			u.visible = false
+			u._stop()
+			s.cargo.append(u)
+			n += 1
+	if n > 0 and owner == ctrl_owner():
+		_toast("Troops boarded: %d" % n, 2.0)
+
+
+func _unload(owner: int) -> void:
+	if kingdom == null:
+		return
+	var t: int = kingdom.team_of(owner)
+	for s in by_team[t]:
+		if s.kind == "transport" and not s.dead:
+			unload_all(s, false)
+
+
+func unload_all(s, died: bool) -> void:
+	if s.cargo.is_empty():
+		return
+	var base: Vector3 = shore_pos(s.position)
+	if not died and base.distance_to(s.position) > 40.0:
+		if s.owner_id == ctrl_owner() or true:
+			_toast("Sail closer to the shore to land the troops.", 2.5)
+		return
+	var i := 0
+	for u in s.cargo:
+		if not is_instance_valid(u):
+			continue
+		u.loaded = null
+		u.visible = true
+		var side := Vector3(-base.z, 0, base.x).normalized()
+		var inward := -Vector3(base.x, 0, base.z).normalized()
+		u.position = base + side * (float(i % 6) - 2.5) * 2.2 + inward * float(i / 6) * 2.4
+		u.position.y = 0.0
+		if died:
+			u.take_damage(u.hp * 0.35)
+		i += 1
+	s.cargo.clear()
+
+
 # ---- ships: boarding and map control (host executes)
 func board(owner_hint := -1) -> void:
 	if is_srv:
@@ -472,7 +568,7 @@ func _board(owner: int) -> void:
 	var best = null
 	var bd := 16.0
 	for e in by_team[h.team]:
-		if e.kind == "ship" and not e.dead and e.pilot_in.length() < 0.01:
+		if (e.kind == "ship" or e.kind == "transport") and not e.dead and e.pilot_in.length() < 0.01:
 			var d: float = e.position.distance_to(h.position)
 			if d < bd:
 				bd = d
@@ -501,7 +597,7 @@ func _ship_go(owner: int, pos: Vector3) -> void:
 	var t: int = kingdom.team_of(owner)
 	pos = keep_on_sea(pos)
 	for e in by_team[t]:
-		if e.kind == "ship" and not e.dead:
+		if (e.kind == "ship" or e.kind == "transport") and not e.dead:
 			e.dest = pos
 			e.has_dest = true
 
@@ -519,7 +615,7 @@ func near_my_ship() -> bool:
 	if h.sailing or h.aboard != null:
 		return true
 	for e in by_team[h.team]:
-		if e.kind == "ship" and not e.dead and e.position.distance_to(h.position) < 16.0:
+		if (e.kind == "ship" or e.kind == "transport") and not e.dead and e.position.distance_to(h.position) < 16.0:
 			return true
 	return false
 
@@ -693,11 +789,228 @@ func _order_at(owner: int, mode: int, mask: int, pos: Vector3, gar: int) -> void
 	var ks := ["sword", "archer", "cav"]
 	for i in 3:
 		if (mask & (1 << i)) != 0:
-			orders[owner][ks[i]] = {"mode": mode, "pos": pos}
+			var old: Dictionary = orders[owner].get(ks[i], {})
+			orders[owner][ks[i]] = {"mode": mode, "pos": pos, "form": int(old.get("form", 0))}
 	if gar >= 0:
 		garrison[owner] = clampi(gar, 0, 100)
 	if kingdom != null and (mode == ADVANCE or mode == CHARGE):
 		kingdom.on_march(owner)
+
+
+# ================================================================== groups and formations (map)
+const SIEGE_KINDS := ["ballista", "catapult"]
+
+
+func _grouped(u) -> bool:
+	return not (u.dead or u.is_ship or u.kind == "villager" or u.kind == "hero" or SIEGE_KINDS.has(u.kind) or u.loaded != null)
+
+
+func _reindex() -> void:
+	for t in nk:
+		var cnt := {}
+		for u in by_team[t]:
+			if not _grouped(u):
+				continue
+			var key: int = u.grp if u.grp > 0 else -1 - KIND_IDS.find(u.kind)
+			var i: int = cnt.get(key, 0)
+			u.gidx = i
+			cnt[key] = i + 1
+		for u in by_team[t]:
+			if not _grouped(u):
+				continue
+			var key2: int = u.grp if u.grp > 0 else -1 - KIND_IDS.find(u.kind)
+			u.gn = int(cnt[key2])
+
+
+func form_offset(form: int, i: int, n: int, team: int) -> Vector3:
+	var v := Vector3.ZERO
+	match form:
+		1:      # line: ranks of up to 16, shoulder to shoulder
+			var per := mini(n, 16)
+			v = Vector3((float(i % 16) - float(per - 1) * 0.5) * 1.9, 0, float(i / 16) * 2.0)
+		2:      # column: two abreast
+			v = Vector3((float(i % 2) - 0.5) * 1.9, 0, float(i / 2) * 1.9)
+		3:      # wedge: apex at the front
+			var r := int((sqrt(8.0 * float(i) + 1.0) - 1.0) / 2.0)
+			var c: int = i - r * (r + 1) / 2
+			v = Vector3((float(c) - float(r) * 0.5) * 2.0, 0, float(r) * 1.8)
+		4:      # ring
+			if n > 1:
+				var a := TAU * float(i) / float(n)
+				var rad := 1.5 + float(n) * 0.45
+				v = Vector3(cos(a) * rad, 0, sin(a) * rad)
+	return rotv(team, v)
+
+
+func group_order(owner: int, g: int) -> Dictionary:
+	var o: Dictionary = group_orders.get(owner, {})
+	return o.get(g, {})
+
+
+func split_groups(mask: int, n: int) -> void:
+	if intro or over:
+		return
+	if is_srv:
+		_split(ctrl_owner(), mask, n)
+	else:
+		split_msg.rpc_id(1, mask, n)
+
+
+@rpc("any_peer", "reliable")
+func split_msg(mask: int, n: int) -> void:
+	if is_srv:
+		_split(multiplayer.get_remote_sender_id(), mask, n)
+
+
+func _split(owner: int, mask: int, n: int) -> void:
+	if kingdom == null:
+		return
+	var t: int = kingdom.team_of(owner)
+	if t < 0 or t >= nk:
+		return
+	n = clampi(n, 1, 6)
+	var ks := ["sword", "archer", "cav"]
+	var per := {}
+	for u in by_team[t]:
+		if not _grouped(u):
+			continue
+		var ki: int = ks.find(u.kind)
+		if ki < 0 or (mask & (1 << ki)) == 0:
+			continue
+		u.grp = 0
+		var j: int = per.get(u.kind, 0)
+		per[u.kind] = j + 1
+		if n > 1:
+			u.grp = 1 + j % n
+	# forget orders of groups that no longer exist
+	var alive := {}
+	for u in by_team[t]:
+		if u.grp > 0 and not u.dead:
+			alive[u.grp] = true
+	var go: Dictionary = group_orders.get(owner, {})
+	for g in go.keys():
+		if not alive.has(g) or n > 1:
+			go.erase(g)
+	group_orders[owner] = go
+	_reindex()
+
+
+func order_group(gmask: int, mode: int, pos: Vector3, form := -1) -> void:
+	if intro or over:
+		return
+	if is_srv:
+		_order_group(ctrl_owner(), gmask, mode, pos, form)
+	else:
+		gorder_msg.rpc_id(1, gmask, mode, pos.x, pos.z, form)
+
+
+@rpc("any_peer", "reliable")
+func gorder_msg(gmask: int, mode: int, x: float, z: float, form: int) -> void:
+	if is_srv:
+		_order_group(multiplayer.get_remote_sender_id(), gmask, mode, Vector3(x, 0, z), form)
+
+
+func _order_group(owner: int, gmask: int, mode: int, pos: Vector3, form: int) -> void:
+	if not group_orders.has(owner):
+		group_orders[owner] = {}
+	for g in range(1, 7):
+		if (gmask & (1 << (g - 1))) != 0:
+			var old: Dictionary = group_orders[owner].get(g, {})
+			var f: int = form if form >= 0 else int(old.get("form", 0))
+			group_orders[owner][g] = {"mode": mode, "pos": pos, "form": f}
+	if kingdom != null and (mode == ADVANCE or mode == CHARGE):
+		kingdom.on_march(owner)
+
+
+# formation for groups (gmask) or kinds (kmask) at their current spot
+func set_form(gmask: int, kmask: int, form: int) -> void:
+	if intro or over:
+		return
+	if is_srv:
+		_set_form(ctrl_owner(), gmask, kmask, form)
+	else:
+		form_msg.rpc_id(1, gmask, kmask, form)
+
+
+@rpc("any_peer", "reliable")
+func form_msg(gmask: int, kmask: int, form: int) -> void:
+	if is_srv:
+		_set_form(multiplayer.get_remote_sender_id(), gmask, kmask, form)
+
+
+func _set_form(owner: int, gmask: int, kmask: int, form: int) -> void:
+	var t: int = kingdom.team_of(owner) if kingdom != null else 0
+	if gmask != 0:
+		if not group_orders.has(owner):
+			group_orders[owner] = {}
+		for g in range(1, 7):
+			if (gmask & (1 << (g - 1))) == 0:
+				continue
+			var o: Dictionary = group_orders[owner].get(g, {})
+			if o.is_empty():
+				# no order yet: stand where the group is now
+				var c := Vector3.ZERO
+				var n := 0
+				for u in by_team[t]:
+					if u.grp == g and not u.dead:
+						c += u.position
+						n += 1
+				if n == 0:
+					continue
+				o = {"mode": HOLD, "pos": c / float(n), "form": 0}
+			o["form"] = form
+			group_orders[owner][g] = o
+		return
+	if not orders.has(owner):
+		orders[owner] = {}
+	var ks := ["sword", "archer", "cav"]
+	for i in 3:
+		if (kmask & (1 << i)) == 0:
+			continue
+		var o2: Dictionary = orders[owner].get(ks[i], {})
+		if o2.is_empty():
+			var c2 := Vector3.ZERO
+			var n2 := 0
+			for u in by_team[t]:
+				if u.kind == ks[i] and not u.dead and u.grp == 0:
+					c2 += u.position
+					n2 += 1
+			if n2 == 0:
+				continue
+			o2 = {"mode": HOLD, "pos": c2 / float(n2), "form": 0}
+		elif int(o2.mode) != HOLD and form > 0:
+			o2 = {"mode": HOLD, "pos": o2.pos, "form": 0}
+		o2["form"] = form
+		orders[owner][ks[i]] = o2
+
+
+func strike_groups(target: int, gmask: int) -> void:
+	if intro or over or kingdom == null:
+		return
+	if is_srv:
+		_strike_groups(ctrl_owner(), target, gmask)
+	else:
+		sgroups_msg.rpc_id(1, target, gmask)
+
+
+@rpc("any_peer", "reliable")
+func sgroups_msg(target: int, gmask: int) -> void:
+	if is_srv:
+		_strike_groups(multiplayer.get_remote_sender_id(), target, gmask)
+
+
+func _strike_groups(owner: int, target: int, gmask: int) -> void:
+	var t: int = kingdom.team_of(owner)
+	if t < 0 or t >= nk or kingdom.fallen[t] or target == t or target < 0 or target >= nk or kingdom.fallen[target]:
+		return
+	if not kingdom.at_war(t, target):
+		kingdom._cmd(owner, "war", {"to": target})
+	if not kingdom.at_war(t, target):
+		return
+	for u in by_team[t]:
+		if not u.dead and u.grp > 0 and (gmask & (1 << (u.grp - 1))) != 0:
+			u.strike_foe = target
+	kingdom.on_march(owner)
 
 
 # ---- targeted attack from the war map: send N soldiers of each kind against one kingdom (target -2 = call everyone back)
@@ -726,7 +1039,8 @@ func _strike(owner: int, target: int, ns: int, na: int, nc: int, nb := 0, ncat :
 		if not orders.has(owner):
 			orders[owner] = {}
 		for k in ["sword", "archer", "cav"]:
-			orders[owner][k] = {"mode": 2, "pos": kingdom.home_pos(t)}
+			orders[owner][k] = {"mode": 2, "pos": kingdom.home_pos(t), "form": 0}
+		group_orders[owner] = {}
 		return
 	if target == t or target < 0 or target >= nk or kingdom.fallen[target]:
 		return
@@ -782,7 +1096,7 @@ func nearest_enemy(u, r: float):
 		if not hostile(u.team, ti):
 			continue
 		for e in by_team[ti]:
-			if e.dead or e.kind == "villager" or (not u.ranged and (e.kind == "ship" or (e.kind == "hero" and e.aboard != null))):
+			if e.dead or e.kind == "villager" or (not u.ranged and (e.is_ship or (e.kind == "hero" and e.aboard != null))):
 				continue
 			var d: float = u.position.distance_squared_to(e.position)
 			if d < bd:
@@ -809,7 +1123,7 @@ func pick_target(u):
 		if not hostile(u.team, ti):
 			continue
 		for e in by_team[ti]:
-			if e.dead or e.kind == "villager" or (not u.ranged and (e.kind == "ship" or (e.kind == "hero" and e.aboard != null))):
+			if e.dead or e.kind == "villager" or (not u.ranged and (e.is_ship or (e.kind == "hero" and e.aboard != null))):
 				continue
 			var d: float = u.position.distance_squared_to(e.position)
 			var s := d
@@ -856,6 +1170,9 @@ func anchor_for(u, ord: Dictionary) -> Vector3:
 		if h != null and is_instance_valid(h) and not h.dead:
 			return h.position + u.slot
 		return u.position
+	var fm: int = int(ord.get("form", 0))
+	if fm > 0 and _grouped(u):
+		return ord.pos + form_offset(fm, u.gidx, u.gn, u.team)
 	return ord.pos + u.slot
 
 
@@ -918,6 +1235,33 @@ func _ai_think(t: int) -> void:
 
 # ================================================================== combat (host)
 func melee_hit(a, t, dmg: float, pw: bool, charge: bool) -> void:
+	if t.kind == "hero" and t.blocking and not t.dead:
+		var toa: Vector3 = a.position - t.position
+		toa.y = 0.0
+		var fwd := Vector3(sin(t.rotation.y), 0, cos(t.rotation.y))
+		if toa.length() > 0.01 and fwd.dot(toa.normalized()) > 0.15:
+			if t.block_t < 0.35:
+				# timed block = PARRY: the attacker reels and is open for a moment
+				a.stagger = 1.0
+				a.atk_cd = maxf(a.atk_cd, 0.0) + 1.3
+				a.swing = 0.0
+				dmg = 0.0
+				_burst(t.position + fwd * 0.8 + Vector3(0, 1.3, 0), Color(1.0, 0.9, 0.4), 12, 4.0, true)
+				sfx.play("clang", t.position, 2.0, 1.4)
+				if t.owner_id == my_id:
+					_toast("PARRY!", 0.8)
+			else:
+				dmg *= 0.15
+				pw = false
+				charge = false
+				_burst(t.position + fwd * 0.8 + Vector3(0, 1.2, 0), Color(0.9, 0.9, 1.0), 6, 3.0, true)
+				sfx.play("clang", t.position, -2.0, 0.9)
+			if dmg <= 0.0:
+				return
+	t.hit_from = a.position
+	t.killer_style = a.atk_style if a.kind == "hero" else -1
+	if pw or charge:
+		t.stagger = 1.0
 	t.take_damage(dmg)
 	var p: Vector3 = t.position + Vector3(0, 1.2, 0)
 	var k := 4 if charge else 0
@@ -938,7 +1282,7 @@ func fire_arrow(u, t) -> void:
 	var dur := clampf(dist / 28.0, 0.35, 1.6)
 	var tf := Vector3(sin(t.rotation.y), 0, cos(t.rotation.y))
 	var to: Vector3 = t.position + tf * t.sim_speed * dur * 0.8 + Vector3(0, 1.0, 0)
-	var dmg: float = UnitS.KINDS[u.kind].dmg * (1.35 if u.buff_t > 0.0 else 1.0)
+	var dmg: float = UnitS.KINDS[u.kind].dmg * (1.35 if u.buff_t > 0.0 else 1.0) * u.rank_mult() * (kingdom.dmg_mult(u.team, u.kind) if kingdom != null else 1.0)
 	var style := 0
 	var spl := 0.0
 	if u.kind == "ballista":
@@ -1001,7 +1345,9 @@ func arrow_land(a) -> void:
 
 
 func on_death(u) -> void:
-	if u.kind == "ship":
+	if u.is_ship:
+		unload_all(u, true)
+	if u.kind == "ship" or u.kind == "transport":
 		for h in heroes.values():
 			if is_instance_valid(h) and h.aboard == u:
 				h.aboard = null
@@ -1053,6 +1399,14 @@ func snap(d: PackedFloat64Array) -> void:
 		u.hp = d[o + 7]
 		u.last_seen = game_time
 		u.sailing = (fl & 8) != 0
+		var ld := (fl & 4096) != 0
+		if ld != u.client_loaded:
+			u.client_loaded = ld
+			u.visible = not ld
+		u.grp = (fl >> 13) & 7
+		var rk := (fl >> 16) & 3
+		if rk != u.rank_lv:
+			u.set_rank(rk)
 		var m := (fl & 2) != 0
 		if m != u.mounted:
 			u.set_mounted(m)
@@ -1233,6 +1587,17 @@ func _do_action(owner: int, act: String, arg: int) -> void:
 				h.set_mounted(not h.mounted)
 		"power":
 			h.power_req = true
+		"block":
+			if arg == 1 and not h.blocking:
+				h.block_t = 0.0
+			h.blocking = arg == 1
+		"kick":
+			h.kick_req = true
+		"focus":
+			h.focus_on = not h.focus_on
+			h.focus_tgt = null
+			if owner == my_id and hud.has("focus"):
+				hud.focus.bg.color = Color(0.8, 0.5, 0.1, 0.85) if h.focus_on else Color(0.2, 0.12, 0.06, 0.7)
 		"rally":
 			if h.rally_cd <= 0.0:
 				h.rally_cd = 25.0
@@ -1261,7 +1626,7 @@ func _send_snap() -> void:
 	var d := PackedFloat64Array()
 	var n := 0
 	for u in units.values():
-		var fl := (1 if u.swing > 0.6 else 0) | (2 if u.mounted else 0) | (4 if u.carry > 0 else 0) | (8 if u.aboard != null else 0) | (int(clampf(u.position.y, 0.0, 31.0) * 8.0) << 4)
+		var fl: int = (1 if u.swing > 0.6 else 0) | (2 if u.mounted else 0) | (4 if u.carry > 0 else 0) | (8 if u.aboard != null else 0) | (4096 if u.loaded != null else 0) | ((u.grp & 7) << 13) | (u.rank_lv << 16) | (int(clampf(u.position.y, 0.0, 31.0) * 8.0) << 4)
 		d.append_array(PackedFloat64Array([u.uid, KIND_IDS.find(u.kind), u.team, u.owner_id, u.position.x, u.position.z, u.rotation.y, u.hp, fl]))
 		n += 1
 		if n >= 12:
@@ -1374,7 +1739,7 @@ func _intro() -> void:
 	var tb := create_tween()
 	tb.tween_property(hud.bar_top, "size:y", vs.y * 0.12, 0.8)
 	tb.parallel().tween_property(hud.bar_bot, "size:y", vs.y * 0.12, 0.8)
-	hud.title.text = "KINGDOM" if kingdom != null else "MEDIEVAL WARS"
+	hud.title.text = (String(cfg.get("king", {}).get("name", "")) if (kingdom != null and String(cfg.get("king", {}).get("name", "")) != "") else ("KINGDOM" if kingdom != null else "SALEEL AL HADID"))
 	hud.title.modulate.a = 0.0
 	var tt := create_tween()
 	tt.tween_property(hud.title, "modulate:a", 1.0, 1.2)
@@ -1383,6 +1748,8 @@ func _intro() -> void:
 
 
 func _intro_step(t: float) -> void:
+	if build_cam:
+		return
 	var dz := 1.0 if my_team == 0 else -1.0
 	var h = heroes.get(my_id)
 	var hp: Vector3 = h.position if h != null else Vector3(0, 0, -52.0 * dz)
@@ -1434,32 +1801,75 @@ func _intro_done() -> void:
 
 
 func _end(winner: int) -> void:
+	winner_team = winner
 	var won := winner == my_team
-	hud.title.text = "VICTORY!" if won else "DEFEAT"
+	var gain := _award(won)
+	hud.title.text = (LocS.t("VICTORY!") if won else LocS.t("DEFEAT")) + "\n+%d " % gain + LocS.t("Renown")
 	hud.title.add_theme_color_override("font_color", Color(1, 0.85, 0.3) if won else Color(0.9, 0.2, 0.2))
 	hud.title.modulate.a = 0.0
 	create_tween().tween_property(hud.title, "modulate:a", 1.0, 1.0)
 	_slowmo(0.35, 2.0)
-	sfx.play_ui("horn")
+	sfx.play_ui("fanfare" if won else "defeat")
 	hud.menu_btn.visible = true
 	var tb := create_tween()
 	tb.tween_property(hud.bar_top, "size:y", vs.y * 0.1, 1.0)
 	tb.parallel().tween_property(hud.bar_bot, "size:y", vs.y * 0.1, 1.0)
 
 
+func _award(won: bool) -> int:
+	var P := preload("res://game/profile.gd")
+	var g := 25 + int(minf(60.0, game_time / 10.0))
+	if won:
+		g += 100
+		P.wins += 1
+		if P.unlock("victor"):
+			g += int(P.ACH.victor.r)
+		if kingdom != null and kingdom.castle_hp[my_team] >= 0.5 * kingdom.CASTLE_HP[kingdom.level[my_team] - 1] and P.unlock("flawless"):
+			g += int(P.ACH.flawless.r)
+	P.games += 1
+	var up: String = P.add_renown(g)
+	if up != "":
+		get_tree().create_timer(2.5).timeout.connect(func(): _toast(LocS.t("New rank:") + " " + LocS.t(up), 4.0))
+	return g
+
+
 # ================================================================== HUD / input
-func _tbtn(parent: Node, txt: String, pos: Vector2, sz: Vector2, cb: Callable, fs := 24) -> Dictionary:
+class TintPanel extends Panel:
+	var color := Color(0, 0, 0, 0.6):
+		set(v):
+			color = v
+			_restyle()
+	var radius := 16
+	var accent := Color(0.95, 0.76, 0.33, 0.95)
+	var bw := 3
+
+	func _restyle() -> void:
+		var s := StyleBoxFlat.new()
+		s.bg_color = Color(color.r * 0.55, color.g * 0.55, color.b * 0.55, minf(color.a + 0.15, 0.92))
+		s.border_color = accent
+		s.set_border_width_all(bw)
+		s.border_width_bottom = bw + 2
+		s.set_corner_radius_all(radius)
+		s.shadow_color = Color(0, 0, 0, 0.5)
+		s.shadow_size = 6
+		s.anti_aliasing = true
+		add_theme_stylebox_override("panel", s)
+
+
+func _tbtn(parent: Node, txt: String, pos: Vector2, sz: Vector2, cb: Callable, fs := 24, icon := "", round_b := false) -> Dictionary:
 	var b := TouchScreenButton.new()
 	var sh := RectangleShape2D.new()
 	sh.size = sz
 	b.shape = sh
 	b.position = pos + sz * 0.5
 	parent.add_child(b)
-	var bg := ColorRect.new()
-	bg.color = Color(0, 0, 0, 0.5)
+	var bg := TintPanel.new()
 	bg.size = sz
 	bg.position = -sz * 0.5
+	bg.radius = int(minf(sz.x, sz.y) * 0.5) if round_b else int(14 * ui_u)
+	bg.bw = maxi(2, int(3 * ui_u))
 	bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	bg.color = Color(0.2, 0.12, 0.06, 0.7)
 	b.add_child(bg)
 	var lb := Label.new()
 	lb.text = txt
@@ -1469,17 +1879,39 @@ func _tbtn(parent: Node, txt: String, pos: Vector2, sz: Vector2, cb: Callable, f
 	lb.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	lb.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	lb.add_theme_font_size_override("font_size", int(fs * ui_u))
+	lb.add_theme_color_override("font_color", Color(1, 0.94, 0.78))
+	lb.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9))
+	lb.add_theme_constant_override("outline_size", 5)
 	b.add_child(lb)
+	if icon != "":
+		var tr := TextureRect.new()
+		var isz := minf(sz.x, sz.y) * (0.56 if txt != "" else 0.7)
+		tr.texture = UiFx.icon(icon, int(isz * 1.3))
+		tr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		tr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		tr.size = Vector2(isz, isz)
+		tr.position = Vector2(-isz * 0.5, -sz.y * 0.5 + sz.y * 0.08)
+		tr.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		b.add_child(tr)
+		lb.vertical_alignment = VERTICAL_ALIGNMENT_BOTTOM
+		lb.size.y = sz.y * 0.94
+		lb.add_theme_font_size_override("font_size", int(fs * 0.78 * ui_u))
+		if txt == "":
+			lb.visible = false
 	b.pressed.connect(cb)
 	rects.append(Rect2(pos, sz))
 	return {"btn": b, "bg": bg, "lbl": lb}
 
 
-func _circle_panel(sz: float, col: Color) -> Panel:
+func _circle_panel(sz: float, col: Color, ring := Color(0, 0, 0, 0), rw := 0) -> Panel:
 	var p := Panel.new()
 	var s := StyleBoxFlat.new()
 	s.bg_color = col
 	s.set_corner_radius_all(int(sz))
+	if rw > 0:
+		s.border_color = ring
+		s.set_border_width_all(rw)
+	s.anti_aliasing = true
 	p.add_theme_stylebox_override("panel", s)
 	p.size = Vector2(sz, sz)
 	p.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -1502,31 +1934,79 @@ func _build_hud() -> void:
 	hud["root"] = root
 
 	hud["top"] = Label.new()
-	hud.top.position = Vector2(20, 12) * u
-	hud.top.add_theme_font_size_override("font_size", int(22 * u))
-	hud.top.add_theme_color_override("font_outline_color", Color.BLACK)
-	hud.top.add_theme_constant_override("outline_size", 6)
+	hud.top.visible = false
 	root.add_child(hud.top)
 
+	# top-left plate: hero health + army / enemy counters
+	var pl := PanelContainer.new()
+	pl.position = Vector2(12, 8) * u
+	var pls := UiFx.plate(14.0 * u, 0.8)
+	pls.content_margin_left = 10 * u
+	pls.content_margin_right = 12 * u
+	pls.content_margin_top = 6 * u
+	pls.content_margin_bottom = 6 * u
+	pl.add_theme_stylebox_override("panel", pls)
+	pl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(pl)
+	var ph := HBoxContainer.new()
+	ph.add_theme_constant_override("separation", int(10 * u))
+	ph.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	pl.add_child(ph)
+	var hi := TextureRect.new()
+	hi.texture = UiFx.icon("heart", int(44 * u))
+	hi.custom_minimum_size = Vector2(26, 26) * u
+	hi.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	hi.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	ph.add_child(hi)
 	hud["hp"] = ProgressBar.new()
-	hud.hp.position = Vector2(20, 56) * u
-	hud.hp.size = Vector2(300, 18) * u
+	hud.hp.custom_minimum_size = Vector2(190, 20) * u
+	hud.hp.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	hud.hp.show_percentage = false
 	hud.hp.max_value = 450.0
 	hud.hp.value = 450.0
 	hud.hp.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	root.add_child(hud.hp)
+	var hbg := StyleBoxFlat.new()
+	hbg.bg_color = Color(0.12, 0.02, 0.03, 0.95)
+	hbg.border_color = Color(0.55, 0.38, 0.12)
+	hbg.set_border_width_all(int(2 * u))
+	hbg.set_corner_radius_all(int(8 * u))
+	var hfl := StyleBoxFlat.new()
+	hfl.bg_color = Color(0.86, 0.17, 0.2)
+	hfl.border_color = Color(1.0, 0.55, 0.5)
+	hfl.border_width_top = int(3 * u)
+	hfl.set_corner_radius_all(int(7 * u))
+	hud.hp.add_theme_stylebox_override("background", hbg)
+	hud.hp.add_theme_stylebox_override("fill", hfl)
+	ph.add_child(hud.hp)
+	var ca := UiFx.chip("army", u, 62, Color(0.7, 0.85, 1.0))
+	var cf := UiFx.chip("foe", u, 62, Color(1.0, 0.7, 0.65))
+	ph.add_child(ca.box)
+	ph.add_child(cf.box)
+	hud["army_l"] = ca.lbl
+	hud["foe_l"] = cf.lbl
+	hud["plate"] = pl
 
+	hud["msgbox"] = PanelContainer.new()
+	var mst := UiFx.plate(16.0 * u, 0.82)
+	mst.content_margin_left = 22 * u
+	mst.content_margin_right = 22 * u
+	mst.content_margin_top = 8 * u
+	mst.content_margin_bottom = 10 * u
+	mst.border_width_bottom = int(4 * u)
+	hud.msgbox.add_theme_stylebox_override("panel", mst)
+	hud.msgbox.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	hud.msgbox.custom_minimum_size = Vector2(vs.x * 0.34, 0)
+	hud.msgbox.modulate.a = 0.0
+	root.add_child(hud.msgbox)
 	hud["msg"] = Label.new()
-	hud.msg.position = Vector2(vs.x * 0.16, vs.y * 0.34)
-	hud.msg.size = Vector2(vs.x * 0.68, 60 * u)
 	hud.msg.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	hud.msg.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	hud.msg.add_theme_font_size_override("font_size", int(27 * u))
+	hud.msg.custom_minimum_size = Vector2(vs.x * 0.34, 0)
+	hud.msg.add_theme_font_size_override("font_size", int(23 * u))
+	hud.msg.add_theme_color_override("font_color", Color(1.0, 0.95, 0.78))
 	hud.msg.add_theme_color_override("font_outline_color", Color.BLACK)
-	hud.msg.add_theme_constant_override("outline_size", 8)
-	hud.msg.modulate.a = 0.0
-	root.add_child(hud.msg)
+	hud.msg.add_theme_constant_override("outline_size", int(5 * u))
+	hud.msgbox.add_child(hud.msg)
 
 	hud["title"] = Label.new()
 	hud.title.position = Vector2(0, vs.y * 0.38)
@@ -1573,10 +2053,21 @@ func _build_hud() -> void:
 	root.add_child(hud.menu_btn)
 
 	var ob := Button.new()
-	ob.text = "Settings"
-	ob.position = Vector2(vs.x - 400 * u, 90 * u)
-	ob.size = Vector2(190, 52) * u
-	ob.add_theme_font_size_override("font_size", int(20 * u))
+	ob.text = ""
+	ob.icon = UiFx.icon("gear", int(56 * u))
+	ob.expand_icon = true
+	ob.position = Vector2(vs.x - 72 * u, 10 * u)
+	ob.size = Vector2(58, 58) * u
+	ob.add_theme_constant_override("icon_max_width", int(36 * u))
+	for stn in ["normal", "hover", "pressed"]:
+		var gs := StyleBoxFlat.new()
+		gs.bg_color = Color(0.2, 0.12, 0.06, 0.88) if stn != "pressed" else Color(0.5, 0.3, 0.08, 0.95)
+		gs.border_color = Color(0.95, 0.76, 0.33)
+		gs.set_border_width_all(int(3 * u))
+		gs.set_corner_radius_all(int(30 * u))
+		gs.shadow_color = Color(0, 0, 0, 0.5)
+		gs.shadow_size = int(5 * u)
+		ob.add_theme_stylebox_override(stn, gs)
 	ob.pressed.connect(_open_options)
 	root.add_child(ob)
 	hud["opt_btn"] = ob
@@ -1588,8 +2079,8 @@ func _build_hud() -> void:
 		bm.build_ui(root, u, vs)
 
 	# joystick
-	hud["stick_base"] = _circle_panel(150 * u, Color(1, 1, 1, 0.12))
-	hud["stick_knob"] = _circle_panel(64 * u, Color(1, 1, 1, 0.35))
+	hud["stick_base"] = _circle_panel(150 * u, Color(0.05, 0.04, 0.03, 0.28), Color(0.95, 0.76, 0.33, 0.7), int(4 * u))
+	hud["stick_knob"] = _circle_panel(64 * u, Color(0.95, 0.78, 0.38, 0.6), Color(1, 0.95, 0.7, 0.95), int(3 * u))
 	root.add_child(hud.stick_base)
 	root.add_child(hud.stick_knob)
 
@@ -1597,22 +2088,29 @@ func _build_hud() -> void:
 	var tl := Node2D.new()
 	root.add_child(tl)
 	hud["tl"] = tl
-	_tbtn(tl, "STRIKE", Vector2(vs.x - 170 * u, vs.y - 170 * u), Vector2(150, 150) * u, func(): _act("power"), 26)
-	hud["mount"] = _tbtn(tl, "MOUNT" if HORSE_RIDING else "HORSE\nSOON", Vector2(vs.x - 290 * u, vs.y - 120 * u), Vector2(110, 100) * u, func(): _act("mount"), 20)
+	_tbtn(tl, "STRIKE", Vector2(vs.x - 170 * u, vs.y - 170 * u), Vector2(150, 150) * u, func(): _act("power"), 24, "sword", true).bg.color = Color(0.55, 0.12, 0.1, 0.8)
+	hud["mount"] = _tbtn(tl, "MOUNT" if HORSE_RIDING else "SOON", Vector2(vs.x - 290 * u, vs.y - 120 * u), Vector2(100, 100) * u, func(): _act("mount"), 20, "horse", true)
 	if not HORSE_RIDING:
-		hud.mount.bg.color = Color(0.15, 0.15, 0.15, 0.55)
+		hud.mount.bg.color = Color(0.12, 0.12, 0.12, 0.6)
 		hud.mount.lbl.add_theme_color_override("font_color", Color(0.65, 0.65, 0.65))
-	hud["rally"] = _tbtn(tl, "RALLY", Vector2(vs.x - 290 * u, vs.y - 230 * u), Vector2(110, 100) * u, func(): _rally_press(), 22)
-	var gx := vs.x - 200 * u
-	var names := ["SWD", "ARC", "CAV"]
+	hud["kick"] = _tbtn(tl, "KICK", Vector2(vs.x - 395 * u, vs.y - 120 * u), Vector2(96, 96) * u, func(): _act("kick"), 20, "boot", true)
+	hud["focus"] = _tbtn(tl, "FOCUS", Vector2(vs.x - 395 * u, vs.y - 226 * u), Vector2(96, 96) * u, func(): _act("focus"), 20, "target", true)
+	var blk := _tbtn(tl, "BLOCK", Vector2(vs.x - 160 * u, vs.y - 290 * u), Vector2(100, 100) * u, func(): _act("block", 1), 20, "shield", true)
+	blk.btn.released.connect(func(): _act("block", 0))
+	hud["block"] = blk
+	hud["rally"] = _tbtn(tl, "RALLY", Vector2(vs.x - 290 * u, vs.y - 230 * u), Vector2(100, 100) * u, func(): _rally_press(), 22, "flag", true)
+	var gx := vs.x - 214 * u
+	var names := ["", "", ""]
+	var nic := ["sword", "bow", "horse"]
 	hud["chips"] = []
 	for i in 3:
 		var bit := 1 << i
-		var c := _tbtn(tl, names[i], Vector2(gx + i * 66 * u, 90 * u), Vector2(62, 52) * u, func(): _toggle_sel(bit), 20)
+		var c := _tbtn(tl, names[i], Vector2(gx + i * 68 * u, 84 * u), Vector2(62, 62) * u, func(): _toggle_sel(bit), 18, nic[i], true)
 		hud.chips.append(c)
-	for i in 5:
-		var mode := i
-		_tbtn(tl, MODE_NAMES[i], Vector2(gx, 150 * u + i * 62 * u), Vector2(192, 56) * u, func(): _order(mode), 22)
+	if kingdom != null and not net.online:   # king orders: Solo Kingdom only
+		for i in 5:
+			var mode := i
+			_tbtn(tl, MODE_NAMES[i], Vector2(gx + 6 * u, 156 * u + i * 56 * u), Vector2(192, 50) * u, func(): _order(mode), 21)
 	_refresh_chips()
 
 
@@ -1633,15 +2131,25 @@ func _open_options() -> void:
 	hud["opt_panel"] = dim
 	modal = true
 	var pc := PanelContainer.new()
-	pc.position = Vector2(vs.x * 0.5 - 250 * u, 60 * u)
+	pc.add_theme_stylebox_override("panel", preload("res://game/uifx.gd").panel())
+	pc.position = Vector2(vs.x * 0.5 - 290 * u, 24 * u)
 	dim.add_child(pc)
 	var vb := VBoxContainer.new()
 	vb.add_theme_constant_override("separation", int(10 * u))
 	pc.add_child(vb)
+	var ttl := Label.new()
+	ttl.text = "SETTINGS"
+	ttl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	ttl.add_theme_font_size_override("font_size", int(32 * u))
+	ttl.add_theme_color_override("font_color", Color(1, 0.84, 0.4))
+	ttl.add_theme_color_override("font_outline_color", Color(0.1, 0.05, 0.02))
+	ttl.add_theme_constant_override("outline_size", int(6 * u))
+	vb.add_child(ttl)
 	var mk := func(text: String, cb: Callable) -> Button:
 		var b := Button.new()
 		b.text = text
 		b.custom_minimum_size = Vector2(500, 62) * u
+		preload("res://game/uifx.gd").style_btn(b, u)
 		b.add_theme_font_size_override("font_size", int(26 * u))
 		b.pressed.connect(cb)
 		vb.add_child(b)
@@ -1682,7 +2190,7 @@ func _toggle_sel(bit: int) -> void:
 func _refresh_chips() -> void:
 	for i in 3:
 		var on := (sel & (1 << i)) != 0
-		hud.chips[i].bg.color = Color(0.9, 0.7, 0.2, 0.75) if on else Color(0, 0, 0, 0.5)
+		hud.chips[i].bg.color = Color(0.95, 0.72, 0.2, 0.9) if on else Color(0.12, 0.08, 0.06, 0.6)
 
 
 func _order(mode: int) -> void:
@@ -1698,12 +2206,21 @@ func _rally_press() -> void:
 	_act("rally")
 
 
+var _toast_tw: Tween
+
+
 func _toast(text: String, secs: float) -> void:
 	hud.msg.text = LocS.t(text)
-	hud.msg.modulate.a = 1.0
-	var tw := create_tween()
-	tw.tween_interval(secs)
-	tw.tween_property(hud.msg, "modulate:a", 0.0, 0.6)
+	hud.msgbox.size = Vector2.ZERO
+	hud.msgbox.modulate.a = 0.0
+	await get_tree().process_frame
+	hud.msgbox.position = Vector2(vs.x * 0.5 - hud.msgbox.size.x * 0.5, vs.y - 26 * ui_u - hud.msgbox.size.y)
+	hud.msgbox.modulate.a = 1.0
+	if _toast_tw != null:
+		_toast_tw.kill()
+	_toast_tw = create_tween()
+	_toast_tw.tween_interval(secs)
+	_toast_tw.tween_property(hud.msgbox, "modulate:a", 0.0, 0.6)
 
 
 func _in_button(p: Vector2) -> bool:
@@ -1781,6 +2298,10 @@ func _physics_process(dt: float) -> void:
 				for t in ai_teams:
 					_ai_think(t)
 		_check_end(dt)
+		grp_t -= dt
+		if grp_t <= 0.0 and is_srv:
+			grp_t = 0.5
+			_reindex()
 	snap_t -= dt
 	if snap_t <= 0.0:
 		snap_t = 0.1
@@ -1843,7 +2364,7 @@ func _process(dt: float) -> void:
 
 
 func _update_camera(dt: float, h) -> void:
-	if intro:
+	if intro or build_cam:
 		return
 	if not cine.is_empty():
 		_cine_step(dt)
@@ -1883,7 +2404,7 @@ func _update_hud(dt: float, h, v: Vector2) -> void:
 	hud.stick_base.position = base - hud.stick_base.size * 0.5
 	hud.stick_knob.position = base + v * 60.0 * u - hud.stick_knob.size * 0.5
 	hud.rally.lbl.text = LocS.t("RALLY" if local_rally <= 0.0 else "%ds" % ceili(local_rally))
-	hud.rally.bg.color = Color(0, 0, 0, 0.5) if local_rally > 0.0 else Color(0.8, 0.6, 0.1, 0.7)
+	hud.rally.bg.color = Color(0.1, 0.1, 0.1, 0.6) if local_rally > 0.0 else Color(0.75, 0.5, 0.08, 0.85)
 	hud_t -= dt
 	if hud_t > 0.0:
 		return
@@ -1901,6 +2422,8 @@ func _update_hud(dt: float, h, v: Vector2) -> void:
 			enemy += 1
 	if mine > 0:
 		spec_pos = sp / mine
+	hud.army_l.text = str(mine)
+	hud.foe_l.text = str(enemy)
 	hud.top.text = LocS.t(("ARMY: %d   ENEMY: %d" if kingdom != null else "YOUR ARMY: %d     ENEMY: %d") % [mine, enemy])
 	if h != null and is_instance_valid(h):
 		hud.hp.value = h.hp

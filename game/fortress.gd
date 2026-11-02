@@ -24,6 +24,8 @@ var throne_pos := [Vector3.ZERO, Vector3.ZERO]
 var inside_keep := false
 var board_t := 0.0
 var rng := RandomNumberGenerator.new()
+var flag_segs := []     # [node, phase] waving banner pieces
+var flag_t := 0.0
 
 
 func _m(c: Color, rough := 0.9, metal := 0.0, emis := 0.0) -> StandardMaterial3D:
@@ -59,14 +61,18 @@ func _build_fort(t: int) -> void:
 	var b := -1.0                      # local z direction towards the back of the castle (root is rotated per kingdom)
 	var root: Node3D = battle.castle_roots[t]
 	var tc: Color = battle.team_col(t)
-	var stone := _m(Color(0.55, 0.53, 0.5), 0.95)
-	var stone_d := _m(Color(0.42, 0.4, 0.38), 0.95)
+	var CKit = load("res://game/castlekit.gd")
+	var CC: Dictionary = CKit.merged(load("res://game/profile.gd").castle) if t == battle.my_team else CKit.DEF
+	var stone := _m(CKit.WALL[int(CC.wall)], 0.95)
+	var stone_d := _m(CKit.WALL[int(CC.wall)].darkened(0.24), 0.95)
+	if t == battle.my_team and int(CC.banner) > 0:
+		tc = CKit.BANNER[int(CC.banner)]
 	var cloth := _m(tc, 0.8, 0.0, 0.5)
 	var gold_m := _m(Color(1.0, 0.78, 0.25), 0.9, 0.25, 0.3)
 	var wood := _m(Color(0.32, 0.2, 0.1), 0.9)
-	var cobble := _m(Color(0.33, 0.3, 0.27), 1.0)
+	var cobble := _m(Color(0.5, 0.46, 0.4), 1.0)
 	var road := _m(Color(0.5, 0.4, 0.28), 1.0)
-	var roofm := _m(Color(0.34, 0.17, 0.12), 0.85)
+	var roofm := _m(CKit.ROOF[int(CC.roof)], 0.85)
 	var flame := _m(Color(1.0, 0.55, 0.15), 0.5, 0.0, 4.0)
 
 	# side + rear walls
@@ -74,9 +80,17 @@ func _build_fort(t: int) -> void:
 		_b(root, Vector3(3, 9, 48), stone, Vector3(sx, 4.5, b * 24.0))
 		for i in 12:
 			_b(root, Vector3(3.3, 1.6, 2.2), stone, Vector3(sx, 9.8, b * (2.0 + i * 4.0)), false)
-	_b(root, Vector3(72, 9, 3), stone, Vector3(0, 4.5, b * 48.0))
+	# rear wall with a postern gate (the way to the fields, forest and mines behind the castle)
+	_b(root, Vector3(9.6, 9, 3), stone, Vector3(-31.2, 4.5, b * 48.0))
+	_b(root, Vector3(57.6, 9, 3), stone, Vector3(7.2, 4.5, b * 48.0))
+	_b(root, Vector3(5.6, 2.2, 3), stone_d, Vector3(-24.0, 7.9, b * 48.0))
 	for i in 18:
+		if i == 2 or i == 3:
+			continue
 		_b(root, Vector3(2.2, 1.6, 3.3), stone, Vector3(-34 + i * 4.0, 9.8, b * 48.0), false)
+	var post_door := _b(root, Vector3(4.8, 5.6, 0.5), wood, Vector3(-24.0, 2.8, b * 48.0), false)
+	for tx in [-26.8, -21.2]:
+		_b(root, Vector3(0.9, 6.4, 3.4), stone_d, Vector3(tx, 3.2, b * 48.0))
 	# wall walk + two stairways (soldiers and ballistas climb them)
 	var wy: float = 6.8
 	var plank_m := _m(Color(0.5, 0.36, 0.2), 0.9)
@@ -178,7 +192,32 @@ func _build_fort(t: int) -> void:
 	for sx in [-17.0, 17.0]:
 		_c(l3, 2.4, 2.6, 11.0, stone, Vector3(sx, 5.5, b * 25.0))
 		battle._mesh(l3, battle._cyl(0.0, 3.4, 4.0, 12), gold_m, Vector3(sx, 13.0, b * 25.0))
-	kingdom.extras[t] = {"l2": l2, "l3": l3}
+	var yard: Node3D = null
+	if battle.sea:
+		yard = Node3D.new()
+		yard.visible = false
+		root.add_child(yard)
+		var plank := _m(Color(0.6, 0.43, 0.24), 0.9)
+		var tile := _m(Color(0.55, 0.2, 0.14), 0.85)
+		# warehouse by the shore, rear of the castle
+		var yz: float = battle.coast_r - battle.ring_r - 7.0
+		_b(yard, Vector3(13, 5, 7), wood, Vector3(0, 2.5, b * yz))
+		var roofp := PrismMesh.new()
+		roofp.size = Vector3(14.5, 3.2, 8.0)
+		battle._mesh(yard, roofp, tile, Vector3(0, 6.6, b * yz), Vector3.ZERO, true)
+		_b(yard, Vector3(4.0, 3.6, 0.3), _m(Color(0.2, 0.12, 0.07)), Vector3(0, 1.8, b * (yz + 3.6)))
+		_b(yard, Vector3(5.0, 0.3, 3.0), plank, Vector3(7.5, 0.3, b * (yz + 1.0)))
+		# pier into the water, with mooring posts
+		for pz in 4:
+			_b(yard, Vector3(5.0, 0.35, 5.0), plank, Vector3(0, 0.45, b * (yz + 5.0 + pz * 5.0)), false)
+		for pz2 in 5:
+			for sx in [-2.6, 2.6]:
+				_c(yard, 0.22, 0.22, 2.0, wood, Vector3(sx, 0.3, b * (yz + 4.0 + pz2 * 4.5)), 6)
+		for ix in [-1.0, 1.0]:
+			_b(yard, Vector3(0.2, 3.4, 0.2), wood, Vector3(ix * 6.0, 2.0, b * (yz + 1.5)))
+		_b(yard, Vector3(12.4, 0.5, 0.3), cloth, Vector3(0, 3.8, b * (yz + 3.7)))
+	_detail_fort(t, root, b, stone, stone_d, cloth, gold_m, wood)
+	kingdom.extras[t] = {"l2": l2, "l3": l3, "yard": yard, "post": post_door}
 	var fire_pos := [Vector3(-36, 17, 0), Vector3(33, 11, 0), Vector3(2, 10, b * 38.0)]
 	for fp in fire_pos:
 		kingdom.fires[t].append(kingdom._make_fire(root, fp))
@@ -188,6 +227,329 @@ func _build_fort(t: int) -> void:
 		var g = _puppet("sword", t, kingdom.lw(t, Vector3(sx, 0, -70.0)))
 		g.tyaw = kingdom.ang(t)
 		guards.append(g)
+
+
+func _flag(parent: Node3D, pos: Vector3, w: float, h: float, col: Material, trim: Material, phase := 0.0, emblem := true) -> void:
+	# a hanging banner made of 5 chained cloth strips that sway in the wind
+	var pole := _b(parent, Vector3(0.14, h * 1.25, 0.14), trim, pos + Vector3(0, h * 0.1, 0), false)
+	var segs := 5
+	var sw := w / segs
+	var prev: Node3D = parent
+	var at := pos + Vector3(0.07, h * 0.4, 0)
+	for i in segs:
+		var s := Node3D.new()
+		prev.add_child(s)
+		s.position = at if i == 0 else Vector3(sw, 0, 0)
+		_b(s, Vector3(sw, h * (1.0 - i * 0.06), 0.05), col, Vector3(sw * 0.5, 0, 0), false)
+		if i == 1 and emblem:
+			_b(s, Vector3(sw * 0.7, sw * 0.7, 0.07), trim, Vector3(sw * 0.5, 0.0, 0), false)
+		flag_segs.append([s, phase + i * 0.55])
+		prev = s
+	_b(parent, Vector3(0.5, 0.5, 0.5), trim, pos + Vector3(0, h * 0.75, 0), false)
+
+
+func _detail_fort(t: int, root: Node3D, b: float, stone: Material, stone_d: Material, cloth: Material, gold_m: Material, wood: Material) -> void:
+	var stone_l := _m(Color(0.66, 0.64, 0.6), 0.95)
+	var slit := _m(Color(0.04, 0.03, 0.03), 1.0)
+	var moss := _m(Color(0.3, 0.38, 0.24), 1.0)
+	var cloth_d := _m(battle.team_col(t).darkened(0.45), 0.8)
+	# side walls: plinth, courses, arrow slits, buttresses, corbels under the parapet
+	for sx in [-36.0, 36.0]:
+		var o := signf(sx)
+		_b(root, Vector3(4.6, 1.6, 49.0), stone_d, Vector3(sx, 0.8, b * 24.0))
+		for k in 3:
+			_b(root, Vector3(3.15, 0.18, 48.6), stone_d, Vector3(sx, 2.4 + k * 2.1, b * 24.0), false)
+		for i in 7:
+			var z := 5.0 + i * 6.5
+			_b(root, Vector3(0.3, 1.5, 0.35), slit, Vector3(sx + o * 1.52, 5.0, b * z), false)
+			_b(root, Vector3(0.3, 0.35, 1.0), slit, Vector3(sx + o * 1.52, 5.5, b * z), false)
+		for i in 5:
+			var z2 := 8.0 + i * 9.0
+			_b(root, Vector3(2.0, 8.0, 2.4), stone_l, Vector3(sx + o * 2.0, 4.0, b * z2))
+			_b(root, Vector3(2.2, 0.8, 2.6), stone_d, Vector3(sx + o * 2.0, 8.2, b * z2), false)
+		for i in 24:
+			_b(root, Vector3(0.6, 0.7, 0.8), stone_d, Vector3(sx + o * 1.7, 8.4, b * (1.0 + i * 2.0)), false)
+		for i in 5:
+			_b(root, Vector3(0.18, 1.5, 4.0), moss, Vector3(sx + o * 1.52, 1.2 + (i % 2) * 0.6, b * (6.0 + i * 8.5)), false)
+		# banners down the outer face
+		for i in 3:
+			var bz := 10.0 + i * 14.0
+			_b(root, Vector3(0.1, 4.6, 2.2), cloth, Vector3(sx + o * 1.58, 5.4, b * bz), false)
+			_b(root, Vector3(0.12, 0.35, 2.4), gold_m, Vector3(sx + o * 1.6, 7.8, b * bz), false)
+			_b(root, Vector3(0.14, 1.0, 1.0), gold_m, Vector3(sx + o * 1.62, 5.6, b * bz), false)
+			battle._mesh(root, battle._cyl(0.0, 1.1, 1.0, 3), cloth_d, Vector3(sx + o * 1.58, 2.6, b * bz), Vector3(0, 0, PI), false)
+	# towers: stone bands, arrow slits, corbelled lookout ring, gold finial, waving banner
+	var tw := [[Vector3(-36, 0, b * 48.0), 4.6, 16.0, 19.0], [Vector3(36, 0, b * 48.0), 4.6, 16.0, 19.0], [Vector3(-36, 0, b * 24.0), 3.6, 13.0, 15.5], [Vector3(36, 0, b * 24.0), 3.6, 13.0, 15.5]]
+	var idx := 0
+	for tdef in tw:
+		var p: Vector3 = tdef[0]
+		var r: float = tdef[1]
+		var h: float = tdef[2]
+		var roof_y: float = tdef[3]
+		for k in 3:
+			_c(root, r + 0.2, r + 0.2, 0.3, stone_d, Vector3(p.x, 1.0 + k * (h / 3.2), p.z), 16)
+		_c(root, r + 0.9, r + 0.5, 1.0, stone_d, Vector3(p.x, h - 0.2, p.z), 16)
+		for ang in 8:
+			var a := float(ang) / 8.0 * TAU
+			_b(root, Vector3(0.8, 1.2, 0.8), stone, Vector3(p.x + cos(a) * (r + 0.8), h + 0.7, p.z + sin(a) * (r + 0.8)), false)
+		for ang in 6:
+			var a2 := float(ang) / 6.0 * TAU + 0.5
+			_b(root, Vector3(0.3, 1.6, 0.3), slit, Vector3(p.x + cos(a2) * (r + 0.02), h * 0.55, p.z + sin(a2) * (r + 0.02)), false)
+		# roof bands
+		battle._mesh(root, battle._sph_mesh(0.7), gold_m, Vector3(p.x, roof_y + 6.4, p.z), Vector3.ZERO, false)
+		_c(root, r * 0.98, r * 1.04, 0.35, gold_m, Vector3(p.x, roof_y - 0.3, p.z), 16)
+		_flag(root, Vector3(p.x, roof_y + 8.2, p.z), 3.4, 1.8, cloth, gold_m, float(idx) * 1.3)
+		idx += 1
+	# gatehouse: lintel with crest, portcullis spikes, hanging banners and braziers
+	_b(root, Vector3(13.6, 1.4, 4.2), stone_d, Vector3(0, 9.9, 0))
+	_b(root, Vector3(13.7, 0.16, 4.3), gold_m, Vector3(0, 10.62, 0), false)
+	_b(root, Vector3(3.4, 3.4, 0.4), cloth, Vector3(0, 12.5, 2.0 * b * -1.0), false)
+	_b(root, Vector3(1.4, 2.2, 0.5), gold_m, Vector3(0, 12.5, 2.05 * b * -1.0), false)
+	_b(root, Vector3(2.4, 0.7, 0.5), gold_m, Vector3(0, 13.4, 2.05 * b * -1.0), false)
+	for sx in [-4.2, -2.8, -1.4, 0.0, 1.4, 2.8, 4.2]:
+		battle._mesh(root, battle._cyl(0.0, 0.22, 1.1, 6), _m(Color(0.25, 0.25, 0.28), 0.4, 0.7), Vector3(sx, 8.4, 0.0), Vector3(PI, 0, 0), false)
+	for sx in [-9.2, 9.2]:
+		_b(root, Vector3(0.7, 0.5, 0.7), _m(Color(0.2, 0.2, 0.22), 0.5, 0.6), Vector3(sx, 2.3, b * -1.5 * -1.0))
+		battle._mesh(root, battle._cyl(0.0, 0.5, 0.9, 8), _m(Color(1.0, 0.55, 0.15), 0.5, 0.0, 4.0), Vector3(sx, 3.0, b * 1.5), Vector3.ZERO, false)
+	# courtyard dressing: crates, barrels, hay, weapon racks, a training dummy
+	var barrel := _m(Color(0.4, 0.26, 0.13), 0.9)
+	var hay := _m(Color(0.85, 0.72, 0.3), 1.0)
+	for i in 6:
+		var sx2 := -30.0 + i * 3.2
+		_c(root, 0.55, 0.62, 1.1, barrel, Vector3(sx2, 0.55, b * 44.5), 10)
+		_b(root, Vector3(0.9, 0.8, 0.9), wood, Vector3(sx2 + 1.4, 0.4, b * 45.0), false)
+	for i in 3:
+		_b(root, Vector3(1.6, 1.2, 1.2), hay, Vector3(26.0 + i * 1.8, 0.6, b * 44.0), false)
+	for sx3 in [-27.0, 27.0]:
+		_b(root, Vector3(0.2, 2.2, 0.2), wood, Vector3(sx3 - 1.0, 1.1, b * 9.0), false)
+		_b(root, Vector3(0.2, 2.2, 0.2), wood, Vector3(sx3 + 1.0, 1.1, b * 9.0), false)
+		_b(root, Vector3(2.2, 0.15, 0.3), wood, Vector3(sx3, 1.6, b * 9.0), false)
+		for k in 4:
+			_b(root, Vector3(0.06, 2.0, 0.06), _m(Color(0.7, 0.72, 0.78), 0.3, 0.9), Vector3(sx3 - 0.75 + k * 0.5, 1.9, b * 9.0), false)
+	var dum := Vector3(-20.0, 0, b * 12.0)
+	_b(root, Vector3(0.18, 1.8, 0.18), wood, dum + Vector3(0, 0.9, 0), false)
+	_b(root, Vector3(1.0, 0.16, 0.16), wood, dum + Vector3(0, 1.5, 0), false)
+	battle._mesh(root, battle._sph_mesh(0.28), hay, dum + Vector3(0, 2.0, 0), Vector3.ZERO, false)
+	_b(root, Vector3(0.7, 0.8, 0.3), hay, dum + Vector3(0, 1.1, 0), false)
+	_yard_zones(t, root, b, stone, stone_d, cloth, gold_m, wood)
+
+
+# ================================================================== castle zones + hall dressing
+func _checker() -> StandardMaterial3D:
+	var img := Image.create(7, 5, false, Image.FORMAT_RGB8)
+	for y in 5:
+		for x in 7:
+			img.set_pixel(x, y, Color(0.88, 0.85, 0.78) if (x + y) % 2 == 0 else Color(0.42, 0.38, 0.34))
+	var m := StandardMaterial3D.new()
+	m.albedo_texture = ImageTexture.create_from_image(img)
+	m.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
+	m.roughness = 0.45
+	return m
+
+
+func _armor(parent: Node3D, pos: Vector3, yaw: float, tc: Color) -> void:
+	var steel := _m(Color(0.66, 0.69, 0.76), 0.35, 0.8)
+	var dk := _m(Color(0.22, 0.2, 0.22), 0.6, 0.5)
+	var cl := _m(tc, 0.8)
+	var gd := _m(Color(1.0, 0.78, 0.25), 0.3, 0.9)
+	var n := Node3D.new()
+	n.position = pos
+	n.rotation.y = yaw
+	parent.add_child(n)
+	_b(n, Vector3(1.3, 0.3, 1.3), dk, Vector3(0, 0.15, 0), false)
+	for sx in [-0.25, 0.25]:
+		_b(n, Vector3(0.36, 1.1, 0.34), steel, Vector3(sx, 0.85, 0), false)
+		_b(n, Vector3(0.38, 0.3, 0.55), dk, Vector3(sx, 0.45, 0.08), false)
+	_b(n, Vector3(0.95, 1.05, 0.55), steel, Vector3(0, 1.95, 0), false)
+	_b(n, Vector3(0.7, 0.9, 0.06), cl, Vector3(0, 1.85, 0.3), false)
+	_b(n, Vector3(0.95, 0.14, 0.58), gd, Vector3(0, 1.45, 0), false)
+	_b(n, Vector3(0.58, 0.58, 0.58), steel, Vector3(0, 2.8, 0), false)
+	_b(n, Vector3(0.5, 0.08, 0.1), dk, Vector3(0, 2.8, 0.3), false)
+	_b(n, Vector3(0.1, 0.4, 0.5), cl, Vector3(0, 3.2, -0.05), false)
+	for sx2 in [-0.62, 0.62]:
+		_b(n, Vector3(0.36, 0.36, 0.4), steel, Vector3(sx2, 2.35, 0), false)
+		_b(n, Vector3(0.26, 0.9, 0.26), steel, Vector3(sx2, 1.8, 0), false)
+	_b(n, Vector3(0.07, 4.2, 0.07), _m(Color(0.4, 0.28, 0.14), 0.9), Vector3(0.7, 2.1, 0.2), false)
+	_b(n, Vector3(0.2, 0.5, 0.06), steel, Vector3(0.7, 4.3, 0.2), false)
+	_b(n, Vector3(0.12, 0.8, 0.8), cl, Vector3(-0.78, 1.9, 0.1), false)
+	_b(n, Vector3(0.14, 0.12, 0.84), gd, Vector3(-0.78, 2.35, 0.1), false)
+
+
+func _hall_extras(t: int, root: Node3D, b: float, kz: float, tc: Color, marble: Material, gold_m: Material, wood: Material, cloth: Material, dark: Material, lamp: Material) -> void:
+	var glass_b := _m(Color(0.25, 0.45, 0.9), 0.3, 0.0, 1.6)
+	var glass_g := _m(Color(1.0, 0.75, 0.25), 0.3, 0.0, 1.6)
+	var glass_r := _m(Color(0.85, 0.2, 0.25), 0.3, 0.0, 1.4)
+	var beam := StandardMaterial3D.new()
+	beam.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	beam.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	beam.albedo_color = Color(1.0, 0.92, 0.65, 0.10)
+	beam.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+	beam.cull_mode = BaseMaterial3D.CULL_DISABLED
+	# gold-bordered rug with a medallion
+	_b(root, Vector3(4.9, 0.12, 14.2), gold_m, Vector3(0, 0.3, kz), false)
+	_b(root, Vector3(4.4, 0.14, 13.8), _m(tc.darkened(0.3), 0.95), Vector3(0, 0.31, kz), false)
+	for k in 5:
+		_c(root, 0.9 - k * 0.12, 0.9 - k * 0.12, 0.05, gold_m if k % 2 == 0 else _m(tc.darkened(0.1), 0.9), Vector3(0, 0.4 + k * 0.01, kz - b * 1.0), 20)
+	for k2 in 4:
+		_b(root, Vector3(0.5, 0.05, 0.5), gold_m, Vector3(0, 0.41, kz + b * (2.0 + k2 * 1.2)), false).rotation.y = PI * 0.25
+	# stained-glass windows with soft light shafts
+	for sx in [-9.95, 9.95]:
+		var o := signf(sx)
+		for k3 in 3:
+			var wz := kz + b * (-4.0 + k3 * 4.0)
+			_b(root, Vector3(0.3, 6.4, 2.6), dark, Vector3(sx, 5.8, wz), false)
+			var gm: Material = [glass_b, glass_g, glass_r][k3]
+			_b(root, Vector3(0.2, 5.6, 2.0), gm, Vector3(sx - o * 0.06, 5.8, wz), false)
+			battle._mesh(root, battle._cyl(1.0, 1.0, 0.2, 14), gm, Vector3(sx - o * 0.06, 8.7, wz), Vector3(0, 0, PI * 0.5), false)
+			_b(root, Vector3(0.24, 5.6, 0.14), dark, Vector3(sx - o * 0.08, 5.8, wz), false)
+			_b(root, Vector3(0.24, 0.14, 2.0), dark, Vector3(sx - o * 0.08, 6.2, wz), false)
+			var sh := _b(root, Vector3(0.05, 8.0, 1.8), beam, Vector3(sx - o * 2.6, 4.2, wz), false)
+			sh.rotation.z = o * 0.55
+	# armour statues between the windows, guards flank the carpet
+	for sx2 in [-9.0, 9.0]:
+		for k4 in 2:
+			_armor(root, Vector3(sx2, 0.3, kz + b * (-2.0 + k4 * 4.0)), PI * 0.5 * -signf(sx2), tc)
+	# hanging banners on the pillars
+	for sx3 in [-6.0, 6.0]:
+		for k5 in 3:
+			var pz := kz + b * (-4.0 + k5 * 3.5)
+			_b(root, Vector3(1.0, 4.6, 0.08), cloth, Vector3(sx3 * 0.82, 7.4, pz), false)
+			_b(root, Vector3(1.1, 0.2, 0.12), gold_m, Vector3(sx3 * 0.82, 9.8, pz), false)
+			battle._mesh(root, battle._cyl(0.0, 0.55, 0.9, 3), _m(tc.darkened(0.3), 0.8), Vector3(sx3 * 0.82, 4.55, pz), Vector3(0, 0, PI), false)
+	# braziers on the dais and at the entrance
+	for pos in [Vector3(-4.8, 0, 5.2), Vector3(4.8, 0, 5.2), Vector3(-2.8, 0, -6.2), Vector3(2.8, 0, -6.2)]:
+		_c(root, 0.5, 0.3, 1.4, _m(Color(0.2, 0.2, 0.22), 0.4, 0.7), Vector3(pos.x, 1.0, kz + b * pos.z), 10)
+		_c(root, 0.6, 0.5, 0.3, gold_m, Vector3(pos.x, 1.8, kz + b * pos.z), 10)
+		battle._mesh(root, battle._cyl(0.0, 0.42, 0.9, 7), _m(Color(1.0, 0.55, 0.15), 0.5, 0.0, 4.0), Vector3(pos.x, 2.3, kz + b * pos.z), Vector3.ZERO, false)
+	# royal crest over the throne: shield with crossed swords
+	_b(root, Vector3(1.5, 1.9, 0.2), _m(Color(0.7, 0.72, 0.8), 0.4, 0.7), Vector3(0, 9.7, kz + b * 6.3), false)
+	_b(root, Vector3(1.2, 1.6, 0.24), _m(tc, 0.7), Vector3(0, 9.7, kz + b * 6.2), false)
+	for sg in [-1.0, 1.0]:
+		_b(root, Vector3(0.1, 2.4, 0.1), _m(Color(0.85, 0.87, 0.92), 0.3, 0.9), Vector3(0, 9.7, kz + b * 6.1), false).rotation.z = sg * 0.7
+	# library wall: bookshelves on the right, a scribe desk with a candle
+	for k6 in 2:
+		var bz := kz + b * (2.5 + k6 * 2.4)
+		_b(root, Vector3(1.0, 4.0, 2.2), wood, Vector3(9.5, 2.0, bz), false)
+		for r in 4:
+			for c in 6:
+				_b(root, Vector3(0.7, 0.7, 0.26), _m(Color.from_hsv(float((r * 6 + c + k6 * 5) % 9) / 9.0, 0.55, 0.65), 0.9), Vector3(9.3, 0.6 + r * 0.95, bz - 0.95 + c * 0.38), false)
+	_b(root, Vector3(2.0, 0.9, 1.0), wood, Vector3(7.0, 0.75, kz + b * 1.0), false)
+	_b(root, Vector3(0.9, 0.06, 0.6), _m(Color(0.9, 0.85, 0.65), 0.9), Vector3(7.0, 1.23, kz + b * 1.0), false)
+	_c(root, 0.07, 0.07, 0.35, _m(Color(0.95, 0.9, 0.8), 0.9), Vector3(7.5, 1.45, kz + b * 1.0), 6)
+	battle._mesh(root, battle._sph_mesh(0.07), lamp, Vector3(7.5, 1.7, kz + b * 1.0), Vector3.ZERO, false)
+	# dais gets a third step and gold trim
+	_b(root, Vector3(13.0, 0.3, 5.2), marble, Vector3(0, 0.3, kz + b * 5.0), false)
+	_b(root, Vector3(13.2, 0.08, 0.2), gold_m, Vector3(0, 0.46, kz + b * 2.5), false)
+	# royal guards (puppets) stand along the carpet
+	var gpos := [Vector3(-3.0, 0.3, -3.2), Vector3(3.0, 0.3, -3.2), Vector3(-3.0, 0.3, 1.0), Vector3(3.0, 0.3, 1.0), Vector3(-2.2, 1.0, 5.2), Vector3(2.2, 1.0, 5.2)]
+	for gp in gpos:
+		var wp: Vector3 = kingdom.lw(t, Vector3(gp.x, gp.y, -73.0 + kz + b * gp.z))
+		var g = _puppet("sword", t, wp)
+		g.tyaw = kingdom.ang(t) + (PI * 0.5 if gp.x < 0.0 else -PI * 0.5)
+		g.rotation.y = g.tyaw
+		guards.append(g)
+
+
+func _yard_zones(t: int, root: Node3D, b: float, stone: Material, stone_d: Material, cloth: Material, gold_m: Material, wood: Material) -> void:
+	var tc: Color = battle.team_col(t)
+	var curb := _m(Color(0.62, 0.6, 0.56), 0.95)
+	var hedge := _m(Color(0.2, 0.42, 0.2), 1.0)
+	var flower_r := _m(Color(0.85, 0.2, 0.25), 0.9)
+	var flower_y := _m(Color(0.95, 0.8, 0.25), 0.9)
+	var flame := _m(Color(1.0, 0.55, 0.15), 0.5, 0.0, 4.0)
+	var steel := _m(Color(0.7, 0.72, 0.78), 0.35, 0.8)
+	var dark := _m(Color(0.2, 0.2, 0.22), 0.5, 0.6)
+	var sign_m := _m(Color(0.26, 0.17, 0.09), 0.9)
+	# road curbs and lanterns along the main avenue
+	for sx in [-3.7, 3.7]:
+		_b(root, Vector3(0.35, 0.3, 40.0), curb, Vector3(sx, 0.2, b * 22.0), false)
+	for z in [8.0, 16.0, 26.0, 34.0]:
+		for sx2 in [-4.4, 4.4]:
+			_b(root, Vector3(0.16, 2.2, 0.16), dark, Vector3(sx2, 1.1, b * z), false)
+			_b(root, Vector3(0.4, 0.5, 0.4), flame, Vector3(sx2, 2.4, b * z), false)
+			_b(root, Vector3(0.5, 0.1, 0.5), dark, Vector3(sx2, 2.72, b * z), false)
+	# plaza ring, hedges and flower beds around the well
+	for k in 12:
+		var a := float(k) / 12.0 * TAU
+		_b(root, Vector3(1.5, 0.22, 0.9), curb, Vector3(sin(a) * 6.6, 0.15, b * 19.0 + cos(a) * 6.6), false).rotation.y = a
+	for sg in [-1.0, 1.0]:
+		for sz in [-1.0, 1.0]:
+			var bx: float = sg * 8.2
+			var bz: float = b * 19.0 + sz * 7.2
+			_b(root, Vector3(3.0, 0.7, 1.0), hedge, Vector3(bx, 0.35, bz), false)
+			for fk in 4:
+				_b(root, Vector3(0.3, 0.3, 0.3), flower_r if (fk + int(sg)) % 2 == 0 else flower_y, Vector3(bx - 1.0 + fk * 0.66, 0.85, bz), false)
+	# benches
+	for sg2 in [-1.0, 1.0]:
+		_b(root, Vector3(2.0, 0.18, 0.6), wood, Vector3(sg2 * 5.2, 0.55, b * 25.5), false)
+		_b(root, Vector3(0.14, 0.5, 0.5), wood, Vector3(sg2 * 5.2 - 0.8, 0.3, b * 25.5), false)
+		_b(root, Vector3(0.14, 0.5, 0.5), wood, Vector3(sg2 * 5.2 + 0.8, 0.3, b * 25.5), false)
+	# keep entrance: wide steps, portal, flanking armour
+	for s in 4:
+		_b(root, Vector3(9.0 - s * 0.6, 0.3, 1.2), curb, Vector3(0, 0.15 + s * 0.3, b * (30.6 - s * 1.0)), false)
+	_b(root, Vector3(1.4, 7.0, 1.4), stone_d, Vector3(-3.4, 3.5, b * 31.0), false)
+	_b(root, Vector3(1.4, 7.0, 1.4), stone_d, Vector3(3.4, 3.5, b * 31.0), false)
+	_b(root, Vector3(8.2, 1.0, 1.6), stone_d, Vector3(0, 7.2, b * 31.0), false)
+	_b(root, Vector3(8.4, 0.14, 1.7), gold_m, Vector3(0, 7.8, b * 31.0), false)
+	for sx3 in [-6.4, 6.4]:
+		_armor(root, Vector3(sx3, 0.3, b * 29.5), PI if b < 0.0 else 0.0, tc)
+	# training yard (left): archery butts + dummies + sign
+	var ty := 14.0
+	for k2 in 3:
+		var tz := b * (ty + k2 * 4.0)
+		_b(root, Vector3(0.18, 2.4, 0.18), wood, Vector3(-30.0, 1.2, tz), false)
+		_b(root, Vector3(0.2, 0.2, 0.2), wood, Vector3(-30.0, 2.4, tz), false)
+		battle._mesh(root, battle._cyl(1.0, 1.0, 0.16, 18), _m(Color(0.9, 0.85, 0.7), 0.9), Vector3(-29.8, 1.7, tz), Vector3(0, 0, PI * 0.5), false)
+		battle._mesh(root, battle._cyl(0.66, 0.66, 0.18, 18), flower_r, Vector3(-29.75, 1.7, tz), Vector3(0, 0, PI * 0.5), false)
+		battle._mesh(root, battle._cyl(0.3, 0.3, 0.2, 14), _m(Color(0.95, 0.9, 0.7), 0.9), Vector3(-29.7, 1.7, tz), Vector3(0, 0, PI * 0.5), false)
+	_b(root, Vector3(0.14, 1.6, 2.0), sign_m, Vector3(-27.0, 2.6, b * 11.0), false)
+	var l1 := Label3D.new()
+	l1.text = LocS.t("TRAINING YARD")
+	l1.font_size = 40
+	l1.pixel_size = 0.014
+	l1.outline_size = 10
+	l1.modulate = Color(1, 0.9, 0.55)
+	l1.position = Vector3(-27.1, 2.6, b * 11.0)
+	l1.rotation.y = PI * 0.5
+	root.add_child(l1)
+	# forge corner (right): anvil, glowing furnace, quench barrel, sign
+	var fx := 27.0
+	var fz := b * 15.0
+	_b(root, Vector3(3.2, 2.4, 2.2), stone_d, Vector3(fx, 1.2, fz))
+	_b(root, Vector3(1.6, 1.0, 0.3), _m(Color(1.0, 0.45, 0.1), 0.5, 0.0, 3.5), Vector3(fx - 1.62, 1.0, fz), false)
+	_b(root, Vector3(0.9, 3.4, 0.9), stone, Vector3(fx, 3.9, fz + b * 0.4), false)
+	_b(root, Vector3(1.2, 0.6, 0.8), dark, Vector3(fx - 3.5, 0.8, fz + 1.8), false)
+	_b(root, Vector3(1.6, 0.25, 0.7), dark, Vector3(fx - 3.5, 1.2, fz + 1.8), false)
+	_c(root, 0.6, 0.7, 1.0, wood, Vector3(fx - 3.2, 0.5, fz - 1.6), 10)
+	var l2 := Label3D.new()
+	l2.text = LocS.t("FORGE")
+	l2.font_size = 40
+	l2.pixel_size = 0.014
+	l2.outline_size = 10
+	l2.modulate = Color(1, 0.8, 0.5)
+	l2.position = Vector3(fx - 1.6, 3.2, fz + 1.3)
+	l2.rotation.y = -PI * 0.5
+	root.add_child(l2)
+	# stables (left rear): fenced paddock, hay, trough, sign
+	var sz0 := b * 36.0
+	for sx4 in [-33.0, -27.0, -21.0]:
+		_b(root, Vector3(0.2, 1.4, 0.2), wood, Vector3(sx4, 0.7, sz0 - 3.0 * b), false)
+		_b(root, Vector3(0.2, 1.4, 0.2), wood, Vector3(sx4, 0.7, sz0 + 3.0 * b), false)
+	for yy in [0.5, 1.1]:
+		_b(root, Vector3(12.0, 0.12, 0.12), wood, Vector3(-27.0, yy, sz0 - 3.0 * b), false)
+		_b(root, Vector3(12.0, 0.12, 0.12), wood, Vector3(-27.0, yy, sz0 + 3.0 * b), false)
+		_b(root, Vector3(0.12, 0.12, 6.0), wood, Vector3(-21.0, yy, sz0), false)
+	_b(root, Vector3(3.0, 0.5, 0.8), wood, Vector3(-30.0, 0.35, sz0), false)
+	_b(root, Vector3(2.6, 0.12, 0.6), _m(Color(0.3, 0.5, 0.8), 0.2, 0.0, 0.3), Vector3(-30.0, 0.62, sz0), false)
+	var l3 := Label3D.new()
+	l3.text = LocS.t("STABLES")
+	l3.font_size = 40
+	l3.pixel_size = 0.014
+	l3.outline_size = 10
+	l3.modulate = Color(1, 0.9, 0.55)
+	l3.position = Vector3(-27.0, 2.2, sz0 - 3.0 * b)
+	l3.rotation.y = 0.0 if b < 0.0 else PI
+	root.add_child(l3)
 
 
 # ================================================================== the throne hall
@@ -200,7 +562,7 @@ func _build_keep(t: int, root: Node3D, b: float, kz: float, tc: Color, stone: Ma
 	var ghost: Array = shell_ghost[t]
 	var cut: Array = shell[t]
 	# floor + carpet + dais
-	_b(root, Vector3(21, 0.3, 15), marble, Vector3(0, 0.15, kz), false)
+	_b(root, Vector3(21, 0.3, 15), _checker(), Vector3(0, 0.15, kz), false)
 	_b(root, Vector3(4.2, 0.34, 14), carpet, Vector3(0, 0.17, kz), false)
 	_b(root, Vector3(11, 0.6, 4.2), marble, Vector3(0, 0.45, kz + b * 5.4), false)
 	_b(root, Vector3(8, 0.6, 3.2), marble, Vector3(0, 0.9, kz + b * 5.6), false)
@@ -304,6 +666,7 @@ func _build_keep(t: int, root: Node3D, b: float, kz: float, tc: Color, stone: Ma
 	root.add_child(st)
 	board[t] = st
 	throne_pos[t] = Vector3(0.0, 0.0, 0.0)
+	_hall_extras(t, root, b, kz, tc, marble, gold_m, wood, cloth, dark, lamp)
 	_set_throne_world(t, kz, b)
 
 
@@ -370,10 +733,11 @@ func sync() -> void:
 
 func _make_npcs() -> void:
 	var t: int = kingdom.my_team
-	var defs := {"messenger": [-5.0, "MESSENGER"], "advisor": [5.0, "ADVISOR"]}
+	var defs := {"messenger": [-5.0, "MESSENGER", -92.0], "advisor": [5.0, "ADVISOR", -92.0], "steward": [15.0, "STEWARD", -88.0]}
 	for k in defs.keys():
-		var p: Vector3 = kingdom.lw(t, Vector3(defs[k][0], 0, -92.0))
+		var p: Vector3 = kingdom.lw(t, Vector3(defs[k][0], 0, defs[k][2]))
 		var u = _puppet("villager", t, p)
+		u.set_role(k)
 		u.tyaw = u.rotation.y
 		npcs[k] = u
 		var lb := Label3D.new()
@@ -386,14 +750,8 @@ func _make_npcs() -> void:
 		lb.no_depth_test = true
 		lb.outline_size = 14
 		lb.modulate = Color(1.0, 0.9, 0.5)
-		lb.position = Vector3(0, 2.7, 0)
+		lb.position = Vector3(0, 2.9 if k == "advisor" else 2.6, 0)
 		u.add_child(lb)
-		var hat_col := Color(0.8, 0.15, 0.15) if k == "messenger" else Color(1.0, 0.78, 0.25)
-		battle._mesh(u.body, battle._box(Vector3(0.46, 0.14, 0.46)), _m(hat_col, 0.6, 0.2 if k == "advisor" else 0.0, 0.0), Vector3(0, 1.98, 0.03), Vector3.ZERO, false)
-		if k == "messenger":
-			battle._mesh(u.body, battle._box(Vector3(0.1, 0.1, 0.5)), _m(Color(0.96, 0.92, 0.8), 0.9, 0.0, 0.4), Vector3(0.3, 1.2, 0.35), Vector3.ZERO, false)
-		else:
-			battle._mesh(u.body, battle._box(Vector3(0.66, 0.9, 0.34)), _m(Color(0.45, 0.12, 0.5), 0.9), Vector3(0, 0.75, 0), Vector3.ZERO, false)
 
 
 func npc_near(kind: String, p: Vector3, r := 5.5) -> bool:
@@ -405,6 +763,10 @@ func npc_near(kind: String, p: Vector3, r := 5.5) -> bool:
 func _process(dt: float) -> void:
 	if kingdom == null or battle == null:
 		return
+	flag_t += dt
+	for fs in flag_segs:
+		fs[0].rotation.y = sin(flag_t * 3.2 + float(fs[1])) * 0.28
+		fs[0].rotation.z = sin(flag_t * 2.1 + float(fs[1]) * 1.3) * 0.05
 	board_t -= dt
 	if board_t <= 0.0:
 		board_t = 0.5

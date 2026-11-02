@@ -17,9 +17,13 @@ const KINDS := {
 	"ballista": {"hp": 90.0, "speed": 2.8, "dmg": 38.0, "range": 40.0, "cd": 2.6},
 	"catapult": {"hp": 130.0, "speed": 2.2, "dmg": 55.0, "range": 50.0, "cd": 4.5},
 	"ship": {"hp": 420.0, "speed": 7.5, "dmg": 45.0, "range": 42.0, "cd": 2.4},
+	"transport": {"hp": 380.0, "speed": 6.2, "dmg": 0.0, "range": 0.0, "cd": 1.0},
+	"fisher": {"hp": 80.0, "speed": 5.0, "dmg": 0.0, "range": 0.0, "cd": 1.0},
 }
+const SHIPS := ["ship", "transport", "fisher"]
 const RANGED := ["archer", "ballista", "catapult", "ship"]
 
+const RigS := preload("res://game/rig.gd")
 const Models := preload("res://game/models.gd")
 
 static var _cache := {}
@@ -34,6 +38,23 @@ var kind := "sword"
 var team := 0
 var owner_id := 0
 var ranged := false
+var is_ship := false
+var job := -1            # building id this villager works at
+var jstate := 0
+var xp := 0              # blows landed (veteran ranks)
+var rank_lv := 0
+var rk_lbl: Label3D
+var cape: Node3D
+var shield_n: Node3D
+var jwait := 0.0          # 0 walking there, 1 working
+var client_loaded := false
+var grp := 0             # map group (0 = none)
+var gidx := 0
+var gn := 1
+var loaded = null        # transport this soldier is riding in
+var cargo: Array = []
+var fish_spot := Vector3.ZERO
+var form_dir := 0.0
 var aboard = null        # ship the king is sailing on (host)
 var pilot_in := Vector3.ZERO   # steering input from the king aboard (ships)
 var dest := Vector3.ZERO
@@ -68,6 +89,41 @@ var body: Node3D
 var arm: Node3D
 var horse: Node3D
 var legs := []
+var rg := {}
+var rigged := false
+var gait := 1.0
+var gphase := 0.0
+var rg_prev_swing := 0.0
+var atk_style := 0
+var combo := 0
+var pre_picked := false
+var hit_fx := 0
+var killer_style := -1
+var death_delay := 0.0
+var map_want := false
+var blocking := false
+var block_t := 0.0
+var kick_req := false
+var kick_cd := 0.0
+var kick_t := 0.0
+var focus_on := false
+var focus_tgt = null
+var clash_lock := false
+var pose_mode := ""
+var pose_push := 0.0
+var pose_side := 1.0
+var map_rot := Vector3(2.4, 0.0, 0.0)
+var map_t := 0.0
+var map_open := 0.0
+var stagger := 0.0
+var hit_dir := Vector2.ZERO
+var hit_from := Vector3.ZERO
+var role := ""
+var civ_role := ""
+var death_t := 0.0
+var head_off := false
+var death_var := 0
+var death_side := 1.0
 var hlegs := []
 var bar: MeshInstance3D
 var bar_mat: StandardMaterial3D
@@ -161,6 +217,7 @@ func setup(k: String, t: int, o: int, b) -> void:
 	hp = max_hp
 	base_speed = s.speed
 	ranged = RANGED.has(k)
+	is_ship = SHIPS.has(k)
 	anim_t = randf() * 10.0
 	_build()
 	if k == "cav" or (k == "hero" and o < 0 and battle.HORSE_RIDING):
@@ -191,7 +248,7 @@ func _build() -> void:
 	if kind == "ballista" or kind == "catapult":
 		_build_siege(tc)
 		return
-	if kind == "ship":
+	if is_ship:
 		_build_ship(tc)
 		return
 	var custom = Models.build(kind)
@@ -206,6 +263,9 @@ func _build() -> void:
 		_make_bar(hero)
 		return
 
+	RigS.build(self, tc, hero)
+	_make_bar(hero)
+	return
 	_add(body, _cap(0.27, 1.0), green if kind == "archer" else cloth, Vector3(0, 1.05, 0), Vector3.ZERO, true)
 	if kind != "archer":
 		_add(body, _box(Vector3(0.5, 0.42, 0.1)), steel, Vector3(0, 1.2, 0.2))
@@ -250,9 +310,14 @@ func _build() -> void:
 		sh.position = Vector3(-0.42, 1.2, 0.15)
 		sh.rotation = Vector3(PI / 2.0, 0, 0)
 		body.add_child(sh)
+		shield_n = sh
 		_add(sh, _cyl(0.36, 0.05), steel)
 		_add(sh, _cyl(0.30, 0.07), cloth, Vector3(0, 0.01, 0))
 		_add(sh, _sph(0.07), gold, Vector3(0, 0.05, 0))
+		# heraldic cross on the shield face
+		_add(sh, _box(Vector3(0.07, 0.03, 0.46)), gold, Vector3(0, 0.07, 0))
+		_add(sh, _box(Vector3(0.46, 0.03, 0.07)), gold, Vector3(0, 0.07, 0))
+	_dress(hero, tc, cloth, glow, steel, gold, dark, skin, green, wood)
 
 	_make_bar(hero)
 
@@ -292,7 +357,55 @@ func _build_siege(tc: Color) -> void:
 	bar.position.y = 3.2
 
 
+func _build_boat(tc: Color) -> void:
+	sc = 1.0
+	var wood := _mat(Color(0.42, 0.27, 0.13), 0.0, 0.9)
+	var plank := _mat(Color(0.62, 0.45, 0.25), 0.0, 0.9)
+	var dwood := _mat(Color(0.28, 0.18, 0.1), 0.0, 0.9)
+	var sail := _mat(Color(0.88, 0.84, 0.72), 0.0, 0.95)
+	var cloth := _mat(tc, 0.0, 0.7, 0.4)
+	if kind == "fisher":
+		_add(body, _box(Vector3(1.5, 0.6, 3.6)), wood, Vector3(0, 0.1, 0), Vector3.ZERO, true)
+		var fp := PrismMesh.new()
+		fp.size = Vector3(1.5, 0.6, 1.2)
+		_add(body, fp, wood, Vector3(0, 0.1, 2.3), Vector3(PI / 2.0, 0, 0), true)
+		_add(body, _box(Vector3(1.3, 0.08, 3.4)), plank, Vector3(0, 0.42, 0))
+		_add(body, _cyl(0.07, 2.6), dwood, Vector3(0, 1.6, 0.3), Vector3.ZERO, true)
+		_add(body, _box(Vector3(1.6, 1.6, 0.05)), sail, Vector3(0.0, 1.7, 0.4), Vector3.ZERO, true)
+		_add(body, _box(Vector3(0.3, 0.3, 0.05)), cloth, Vector3(0.0, 2.3, 0.45))
+		# net basket
+		var net_m := _mat(Color(0.55, 0.5, 0.35), 0.0, 1.0)
+		_add(body, _box(Vector3(0.7, 0.35, 0.7)), net_m, Vector3(0, 0.65, -1.1))
+		arm = Node3D.new()
+		body.add_child(arm)
+		_make_bar(false)
+		bar.position.y = 3.0
+		return
+	# transport: broad hull, open deck with cargo crates
+	_add(body, _box(Vector3(3.8, 1.2, 8.0)), wood, Vector3(0, 0.2, 0), Vector3.ZERO, true)
+	var pr := PrismMesh.new()
+	pr.size = Vector3(3.8, 1.2, 2.4)
+	_add(body, pr, wood, Vector3(0, 0.2, 5.1), Vector3(PI / 2.0, 0, 0), true)
+	_add(body, _box(Vector3(3.9, 0.16, 8.2)), dwood, Vector3(0, 0.85, 0))
+	_add(body, _box(Vector3(3.4, 0.1, 7.6)), plank, Vector3(0, 0.88, 0))
+	for sx in [-1.9, 1.9]:
+		_add(body, _box(Vector3(0.12, 0.7, 7.8)), dwood, Vector3(sx, 1.2, 0))
+	for i in 3:
+		_add(body, _box(Vector3(1.0, 0.9, 1.0)), plank, Vector3(-0.9 + (i % 2) * 1.6, 1.4, -2.4 + i * 1.4), Vector3(0, i * 0.4, 0))
+	_add(body, _cyl(0.15, 5.0), dwood, Vector3(0, 3.4, 1.4), Vector3.ZERO, true)
+	_add(body, _box(Vector3(3.2, 2.4, 0.07)), sail, Vector3(0, 3.4, 1.45), Vector3.ZERO, true)
+	_add(body, _box(Vector3(3.2, 0.5, 0.09)), cloth, Vector3(0, 3.9, 1.45))
+	_add(body, _box(Vector3(2.8, 0.7, 1.6)), wood, Vector3(0, 1.3, -3.4), Vector3.ZERO, true)
+	arm = Node3D.new()
+	body.add_child(arm)
+	_make_bar(false)
+	bar.position.y = 6.2
+
+
 func _build_ship(tc: Color) -> void:
+	if kind != "ship":
+		_build_boat(tc)
+		return
 	sc = 1.0
 	var wood := _mat(Color(0.42, 0.27, 0.13), 0.0, 0.9)
 	var plank := _mat(Color(0.62, 0.45, 0.25), 0.0, 0.9)
@@ -341,17 +454,7 @@ func _build_villager(tc: Color) -> void:
 		body.add_child(rig.root)
 		_team_ring(tc)
 	else:
-		_add(body, _cap(0.26, 0.95), tunic, Vector3(0, 1.0, 0), Vector3.ZERO, true)
-		_add(body, _box(Vector3(0.54, 0.1, 0.34)), sash, Vector3(0, 0.95, 0))
-		for sx in [-0.11, 0.11]:
-			var hip := Node3D.new()
-			hip.position = Vector3(sx, 0.75, 0)
-			body.add_child(hip)
-			_add(hip, _box(Vector3(0.15, 0.75, 0.18)), dark, Vector3(0, -0.375, 0))
-			legs.append(hip)
-		_add(body, _sph(0.16), skin, Vector3(0, 1.72, 0.03))
-		_add(body, _cyl(0.3, 0.03), straw, Vector3(0, 1.84, 0.03))
-		_add(body, _cyl(0.15, 0.14), straw, Vector3(0, 1.92, 0.03))
+		RigS.build_civ(self, tc, "villager")
 	# basket on the back, shown while carrying fruit
 	carry_node = Node3D.new()
 	carry_node.position = Vector3(0, 1.1, -0.3)
@@ -360,12 +463,28 @@ func _build_villager(tc: Color) -> void:
 	_add(carry_node, _box(Vector3(0.42, 0.34, 0.26)), wood)
 	for i in 4:
 		_add(carry_node, _sph(0.09), red, Vector3(-0.15 + i * 0.1, 0.2, 0.0))
-	arm = Node3D.new()
-	arm.position = Vector3(0.34, 1.25, 0.05)
-	body.add_child(arm)
-	_add(arm, _box(Vector3(0.04, 0.04, 0.7)), wood, Vector3(0, 0, 0.3))
+	if not rigged:
+		arm = Node3D.new()
+		arm.position = Vector3(0.34, 1.25, 0.05)
+		body.add_child(arm)
+		_add(arm, _box(Vector3(0.04, 0.04, 0.7)), wood, Vector3(0, 0, 0.3))
 	_make_bar(false)
 	bar.position.y = 2.3
+
+
+# turn a villager into a named NPC (messenger / advisor / steward)
+func set_role(r: String) -> void:
+	role = r
+	for c in body.get_children():
+		if c != carry_node:
+			c.queue_free()
+	legs.clear()
+	rg = {}
+	rigged = false
+	RigS.build_civ(self, battle.team_col(team), r)
+	if carry_node != null:
+		carry_node.queue_free()
+		carry_node = null
 
 
 func set_carry(v: bool) -> void:
@@ -404,6 +523,62 @@ func _make_bar(hero: bool) -> void:
 	add_child(bar)
 
 
+func _dress(hero: bool, tc: Color, cloth: Material, glow: Material, steel: Material, gold: Material, dark: Material, skin: Material, green: Material, wood: Material) -> void:
+	var leather := _mat(Color(0.33, 0.2, 0.1), 0.0, 0.9)
+	var white := _mat(Color(0.95, 0.94, 0.9), 0.0, 0.95)
+	var trim := _mat(tc.darkened(0.45), 0.0, 0.8)
+	# boots
+	for l in legs:
+		_add(l, _box(Vector3(0.2, 0.2, 0.34)), dark, Vector3(0, -0.74, 0.05))
+	# belt + buckle
+	_add(body, _box(Vector3(0.54, 0.08, 0.3)), leather, Vector3(0, 0.95, 0.0))
+	_add(body, _box(Vector3(0.1, 0.1, 0.04)), gold, Vector3(0, 0.95, 0.16))
+	if kind == "archer":
+		# hood + feather, bracers, scarf
+		_add(body, _cyl(0.25, 0.12), green, Vector3(0, 1.74, 0.0))
+		_add(body, _box(Vector3(0.03, 0.03, 0.34)), white, Vector3(0.14, 1.98, -0.1), Vector3(0.5, 0, 0.3))
+		_add(body, _box(Vector3(0.5, 0.1, 0.34)), _mat(Color(0.55, 0.35, 0.15), 0.0, 0.9), Vector3(0, 1.58, 0.02))
+		_add(body, _box(Vector3(0.1, 0.5, 0.1)), leather, Vector3(0.36, 1.3, 0.08))
+		_add(body, _box(Vector3(0.1, 0.5, 0.1)), leather, Vector3(-0.36, 1.3, 0.08))
+		return
+	# tabard over the armour with a heraldic stripe
+	_add(body, _box(Vector3(0.44, 0.62, 0.03)), cloth, Vector3(0, 1.1, 0.24))
+	_add(body, _box(Vector3(0.1, 0.62, 0.035)), white if not hero else gold, Vector3(0, 1.1, 0.245))
+	_add(body, _box(Vector3(0.44, 0.1, 0.035)), trim, Vector3(0, 0.83, 0.245))
+	# cape
+	cape = Node3D.new()
+	cape.position = Vector3(0, 1.62, -0.24)
+	body.add_child(cape)
+	var cl: float = 0.95 if not hero else 1.25
+	_add(cape, _box(Vector3(0.54, cl, 0.04)), trim, Vector3(0, -cl * 0.5, -0.03))
+	if hero:
+		_add(cape, _box(Vector3(0.5, 0.1, 0.05)), gold, Vector3(0, -cl + 0.05, -0.03))
+	# pauldrons and gauntlets
+	for sx in [-0.34, 0.34]:
+		_add(body, _sph(0.17), steel, Vector3(sx, 1.46, 0.0))
+		_add(body, _box(Vector3(0.14, 0.14, 0.14)), steel, Vector3(sx * 1.1, 1.0, 0.1))
+	# helmet details: nasal bar, brow ridge, crest
+	_add(body, _box(Vector3(0.03, 0.14, 0.03)), steel, Vector3(0, 1.82, 0.24))
+	_add(body, _box(Vector3(0.36, 0.04, 0.05)), steel, Vector3(0, 1.93, 0.2))
+	if kind == "cav":
+		_add(body, _box(Vector3(0.05, 0.18, 0.4)), glow, Vector3(0, 2.14, -0.04))
+	elif not hero:
+		_add(body, _box(Vector3(0.04, 0.08, 0.3)), glow, Vector3(0, 2.1, -0.02))
+	if hero:
+		# crown ring with points and jewels, fur mantle
+		_add(body, _cyl(0.245, 0.09), gold, Vector3(0, 2.1, -0.02))
+		for i in 6:
+			var a := float(i) / 6.0 * TAU
+			_add(body, _box(Vector3(0.05, 0.16, 0.05)), gold, Vector3(sin(a) * 0.22, 2.22, cos(a) * 0.22 - 0.02))
+		_add(body, _sph(0.045), _mat(Color(0.9, 0.1, 0.15), 0.2, 0.3, 0.8), Vector3(0, 2.13, 0.24))
+		for i in 7:
+			var b := float(i) / 7.0 * PI + PI * 0.0
+			_add(body, _sph(0.11), white, Vector3(cos(b) * 0.36, 1.58, sin(b) * 0.1 - 0.02))
+		_add(body, _box(Vector3(0.62, 0.05, 0.34)), gold, Vector3(0, 1.38, 0.02))
+		# jewelled sword pommel and cross guard
+		_add(arm, _sph(0.06), _mat(Color(0.2, 0.5, 1.0), 0.2, 0.3, 0.9), Vector3(0, 0, -0.08))
+
+
 func _build_horse() -> void:
 	var hr = Models.build("horse")
 	if hr != null:
@@ -421,6 +596,9 @@ func _build_horse() -> void:
 	var tc: Color = battle.team_col(team)
 	_add(horse, _box(Vector3(0.6, 0.65, 1.6)), hm, Vector3(0, 1.0, 0), Vector3.ZERO, true)
 	_add(horse, _box(Vector3(0.66, 0.67, 0.9)), _mat(tc, 0.0, 0.8), Vector3(0, 1.02, -0.05))
+	_add(horse, _box(Vector3(0.72, 0.5, 0.5)), _mat(tc.darkened(0.3), 0.0, 0.8), Vector3(0, 0.84, 0.02))
+	_add(horse, _box(Vector3(0.1, 0.3, 0.1)), _mat(Color(1.0, 0.78, 0.25), 1.0, 0.25), Vector3(0, 1.75, 1.3))
+	_add(horse, _box(Vector3(0.04, 0.16, 0.2)), _mat(tc, 0.0, 0.6, 0.6), Vector3(0, 1.98, 1.0))
 	_add(horse, _box(Vector3(0.28, 0.7, 0.3)), hm, Vector3(0, 1.45, 0.8), Vector3(-0.5, 0, 0))
 	_add(horse, _box(Vector3(0.24, 0.26, 0.55)), hm, Vector3(0, 1.75, 1.15))
 	_add(horse, _box(Vector3(0.06, 0.6, 0.2)), dark, Vector3(0, 1.5, 0.62), Vector3(-0.5, 0, 0))
@@ -468,25 +646,47 @@ func _process(dt: float) -> void:
 		rotation.y = lerp_angle(rotation.y, tyaw, clampf(dt * 12.0, 0.0, 1.0))
 	flash = maxf(0.0, flash - dt * 4.0)
 	if dead:
+		if rigged:
+			RigS.animate_death(self, dt)
 		return
 	var mv := sim_speed > 0.4
 	anim_t += dt * (1.0 + sim_speed * 0.5)
 	var ph := sin(anim_t * 7.0)
 	if rig != null or hrig != null:
 		_model_anim()
-	for i in legs.size():
+	for i in (0 if rigged else legs.size()):
 		legs[i].rotation.x = ph * 0.8 * (1.0 if i == 0 else -1.0) * (1.0 if mv else 0.0)
 	for i in hlegs.size():
 		hlegs[i].rotation.x = ph * 0.7 * (1.0 if i % 3 == 0 else -1.0) * (1.0 if mv else 0.0)
-	body.position.y = (ride_y if mounted else 0.0) + (absf(ph) * 0.05 if (mv and rig == null) else 0.0)
+	body.position.y = (ride_y if mounted else 0.0) + (absf(ph) * 0.05 if (mv and rig == null and not rigged) else 0.0)
 	body.scale = Vector3.ONE * sc * (1.0 + flash * 0.1)
+	if rigged:
+		RigS.animate(self, dt)
+	elif rig == null and not is_ship and kind != "villager" and cape != null or (rig == null and kind == "archer"):
+		var run: float = clampf(sim_speed / 6.0, 0.0, 1.0)
+		var breathe := sin(anim_t * 1.6) * 0.012
+		# lean into the run, sway with each stride, recoil when hit, breathe when idle
+		body.rotation.x = lerpf(body.rotation.x, -0.16 * run + flash * 0.25, clampf(dt * 10.0, 0.0, 1.0))
+		body.rotation.z = lerpf(body.rotation.z, (ph * 0.05 * run) if mv else 0.0, clampf(dt * 10.0, 0.0, 1.0))
+		body.scale.y += breathe
+		if cape != null:
+			cape.rotation.x = 0.1 + run * 0.55 + sin(anim_t * 5.0) * (0.04 + 0.08 * run)
+			cape.rotation.z = sin(anim_t * 3.3) * 0.04 * (1.0 + run)
+		if shield_n != null:
+			shield_n.rotation.x = PI / 2.0 + (ph * 0.06 if mv else sin(anim_t * 1.6) * 0.02)
+		# lunge forward during the strike
+		var lunge := 0.0
+		if swing > 0.0:
+			lunge = sin((1.0 - swing) * PI) * (0.35 if kind != "archer" else -0.08)
+		body.position.z = lerpf(body.position.z, lunge, clampf(dt * 18.0, 0.0, 1.0))
 	if swing > 0.0:
-		swing = maxf(0.0, swing - dt * (1.5 if power else 2.4))
+		swing = maxf(0.0, swing - dt * ((1.35 if atk_style in [5, 6, 7, 9, 10] else 1.8) if (power or kind == "hero") else 2.4))
 		var s := 1.0 - swing
-		arm.rotation.x = lerpf(-1.8, 1.0, s * s)
-	else:
+		if not rigged:
+			arm.rotation.x = lerpf(-1.8, 1.0, s * s)
+	elif not rigged:
 		arm.rotation.x = lerpf(arm.rotation.x, -0.5, clampf(dt * 8.0, 0.0, 1.0))
-	if kind == "ship":
+	if is_ship:
 		body.position.y = sin(anim_t * 1.6) * 0.13
 		body.rotation.z = sin(anim_t * 1.3) * 0.05
 		body.rotation.x = sin(anim_t * 1.1 + 1.0) * 0.03 - clampf(sim_speed * 0.004, 0.0, 0.05)
@@ -548,9 +748,20 @@ func _physics_process(dt: float) -> void:
 		return
 	_dt = dt
 	atk_cd -= dt
+	kick_cd -= dt
+	block_t += dt
 	buff_t -= dt
 	rally_cd -= dt
 	mount_cd -= dt
+	if loaded != null:
+		if is_instance_valid(loaded) and not loaded.dead:
+			position = loaded.position + Vector3(0, 0.8, 0)
+			return
+		loaded = null
+		visible = true
+	if clash_lock:
+		_stop()
+		return
 	if battle.freeze_others and kind != "hero":
 		_stop()
 		return
@@ -578,6 +789,48 @@ func _duel_clamp() -> void:
 		position.z = np.z
 
 
+# Villager with a job: walk to the building, then build or work there.
+func _job() -> void:
+	var k = battle.kingdom
+	var tw = k.town
+	var b = tw.get_b(job)
+	if b == null:
+		job = -1
+		jstate = 0
+		return
+	if carry > 0:
+		carry = 0
+		set_carry(false)
+	var wp: Vector3 = tw.work_pos(team, b, uid)
+	var dd := wp - position
+	dd.y = 0.0
+	if jstate == 0:
+		jwait += get_process_delta_time()
+		if jwait > 14.0 and dd.length() >= 9.0:
+			position.x = wp.x
+			position.z = wp.z
+			jwait = 6.1
+		if dd.length() < 1.8 or (jwait > 6.0 and dd.length() < 9.0):
+			jstate = 1
+			_vswing = 0.0
+		else:
+			var w := _via(wp) - position
+			w.y = 0.0
+			_move(w, spd())
+		return
+	_stop()
+	if dd.length() > 9.5:
+		jstate = 0
+		jwait = 0.0
+		return
+	_face(tw.site_pos(team, b) - position)
+	if _vswing <= 0.0:
+		_vswing = 0.85
+		swing = 1.0
+		if float(b.prog) < 1.0 and randf() < 0.35:
+			battle.sfx.play("hammer", position, -12.0, randf_range(0.9, 1.2))
+
+
 # Villager: walk to a fruit tree, pick fruit, carry it to the castle, repeat.
 func _villager() -> void:
 	var k = battle.kingdom
@@ -586,6 +839,9 @@ func _villager() -> void:
 		return
 	if _vswing > 0.0:
 		_vswing -= _dt
+	if job >= 0:
+		_job()
+		return
 	match vstate:
 		0:
 			vtimer -= _dt
@@ -657,7 +913,8 @@ func _move(dir: Vector3, s: float) -> void:
 		return
 	dir = dir.normalized()
 	var push: Vector3 = battle.separation(self)
-	var np := position + (dir * s + push * 2.0) * _dt
+	var climb := 1.6 if position.y > 0.3 else 1.0
+	var np := position + (dir * s * climb + push * (0.6 if position.y > 0.3 else 2.0)) * _dt
 	if battle.sea:
 		var fl2 := Vector2(np.x, np.z)
 		var lim2: float = battle.coast_r - 4.0
@@ -666,14 +923,14 @@ func _move(dir: Vector3, s: float) -> void:
 			np.x = fl2.x
 			np.z = fl2.y
 	elif battle.nk > 2:
-		var lim: float = battle.ring_r + 50.0
+		var lim: float = battle.ring_r + 50.0 + battle.HINT
 		var flat := Vector2(np.x, np.z)
 		if flat.length() > lim:
 			flat = flat.normalized() * lim
 			np.x = flat.x
 			np.z = flat.y
 	else:
-		var zmax := 78.0 if battle.kingdom == null else 124.0
+		var zmax: float = 78.0 if battle.kingdom == null else 124.0 + battle.HINT
 		np.x = clampf(np.x, -95.0, 95.0)
 		np.z = clampf(np.z, -zmax, zmax)
 	sim_speed = lerpf(sim_speed, s, clampf(_dt * 6.0, 0.0, 1.0))
@@ -718,7 +975,7 @@ func _hero() -> void:
 			rotation.y = lerp_angle(rotation.y, aboard.rotation.y, clampf(_dt * 6.0, 0.0, 1.0))
 			sim_speed = 0.0
 			return
-	var s := spd()
+	var s := spd() * (0.5 if blocking else 1.0)
 	var mvl := move_in.length()
 	if mvl > 0.08:
 		_move(move_in.normalized(), s * minf(mvl, 1.0))
@@ -726,6 +983,38 @@ func _hero() -> void:
 		_stop()
 	var rng: float = KINDS.hero.range + (0.9 if mounted else 0.0)
 	var t = battle.nearest_enemy(self, rng + 0.6)
+	# FOCUS: lock on to one opponent, keep facing him whatever you do
+	if focus_on:
+		if focus_tgt == null or not is_instance_valid(focus_tgt) or focus_tgt.dead or focus_tgt.position.distance_to(position) > 22.0:
+			focus_tgt = battle.nearest_enemy(self, 20.0)
+		if focus_tgt != null:
+			var fd: Vector3 = focus_tgt.position - position
+			if fd.length() < rng + 0.6:
+				t = focus_tgt
+			_face(fd)
+	else:
+		focus_tgt = null
+	# KICK: a short leg strike that shoves and staggers
+	if kick_req:
+		kick_req = false
+		if kick_cd <= 0.0 and not blocking and swing <= 0.0:
+			kick_cd = 1.1
+			kick_t = 1.0
+			var kt = focus_tgt if (focus_on and focus_tgt != null) else battle.nearest_enemy(self, 3.0)
+			if kt != null and kt.position.distance_to(position) < 3.2:
+				rotation.y = atan2(kt.position.x - position.x, kt.position.z - position.z)
+				atk_style = 2
+				battle.melee_hit(self, kt, 14.0 * rank_mult(), true, false)
+				if kt.kind != "hero" or battle.duel_active:
+					var kd: Vector3 = kt.position - position
+					kd.y = 0.0
+					if kd.length() > 0.01:
+						kt.position += kd.normalized() * 0.9
+			battle.sfx.play("thud", position, -2.0, 0.8)
+	if blocking:
+		if t != null and mvl < 0.08:
+			_face(t.position - position)
+		return
 	if t != null:
 		if atk_cd <= 0.0:
 			if power_req:
@@ -756,13 +1045,20 @@ func _ai() -> void:
 			target = kg
 			_engage(M_CHARGE)
 			return
-	if kind == "ship":
-		_ship_ai()
+	if is_ship:
+		if kind == "fisher":
+			_fish_ai()
+		else:
+			_ship_ai()
 		return
 	var okind := "sword" if kind == "hero" else kind
 	if kind == "ballista" or kind == "catapult":
 		okind = "archer"
 	var ord: Dictionary = battle.get_order(owner_id, okind)
+	if grp > 0:
+		var gord: Dictionary = battle.group_order(owner_id, grp)
+		if not gord.is_empty():
+			ord = gord
 	if battle.kingdom != null and (kind == "archer" or kind == "ballista") and battle.is_garrison(self) \
 			and battle.kingdom.castle_alive(team) and strike_foe < 0 and battle.kingdom.has_wall(team):
 		_wall_duty()
@@ -829,6 +1125,50 @@ func _wall_duty() -> void:
 	_move(dv, spd())
 
 
+func _sail_to(p: Vector3, mult := 1.0) -> bool:
+	var dd := p - position
+	dd.y = 0.0
+	if dd.length() < 3.0:
+		sim_speed = lerpf(sim_speed, 0.0, clampf(_dt * 3.0, 0.0, 1.0))
+		return true
+	var np: Vector3 = position + dd.normalized() * spd() * mult * _dt
+	np = battle.keep_on_sea(np)
+	var dv := np - position
+	sim_speed = lerpf(sim_speed, dv.length() / maxf(_dt, 0.0001), clampf(_dt * 4.0, 0.0, 1.0))
+	if dv.length() > 0.001:
+		rotation.y = lerp_angle(rotation.y, atan2(dv.x, dv.z), clampf(_dt * 2.5, 0.0, 1.0))
+	position = Vector3(np.x, 0.0, np.z)
+	return false
+
+
+# Fishing boat: sail to a fishing ground, cast the net, bring the catch home.
+func _fish_ai() -> void:
+	var k = battle.kingdom
+	if k == null:
+		return
+	if fish_spot == Vector3.ZERO:
+		fish_spot = k.fish_spot(team, uid)
+	match vstate:
+		0:
+			if _sail_to(fish_spot):
+				vstate = 1
+				vtimer = 9.0
+		1:
+			_stop()
+			vtimer -= _dt
+			if fmod(vtimer, 3.0) < _dt:
+				swing = 1.0
+			if vtimer <= 0.0:
+				carry = 16
+				vstate = 2
+		2:
+			if _sail_to(battle.keep_on_sea(k.dock_pos(team) + battle.rotv(team, Vector3(float(uid % 5) * 3.0 - 6.0, 0, 0.0)))):
+				k.deposit(team, carry)
+				battle.sfx.play("coin", position, -10.0, 1.2)
+				carry = 0
+				vstate = 0
+
+
 func _ship_ai() -> void:
 	var mv := Vector3.ZERO
 	if pilot_in.length() > 0.08:
@@ -853,7 +1193,7 @@ func _ship_ai() -> void:
 	else:
 		sim_speed = lerpf(sim_speed, 0.0, clampf(_dt * 3.0, 0.0, 1.0))
 	# cannons: nearest enemy soldier, else the enemy castle wall
-	if atk_cd > 0.0:
+	if atk_cd > 0.0 or kind != "ship":
 		return
 	var t = battle.nearest_enemy(self, KINDS.ship.range)
 	if t != null:
@@ -892,7 +1232,7 @@ func _siege() -> bool:
 			atk_cd = s.cd
 			swing = 1.0
 			power = false
-			var d: float = s.dmg * (1.35 if buff_t > 0.0 else 1.0)
+			var d: float = s.dmg * (1.35 if buff_t > 0.0 else 1.0) * (battle.kingdom.dmg_mult(team, kind) if battle.kingdom != null else 1.0)
 			if kind == "catapult":
 				d *= 4.0
 			elif kind == "ballista":
@@ -940,7 +1280,11 @@ func _strike(t, mult: float, pw: bool) -> void:
 	atk_cd = s.cd * (1.8 if pw else 1.0)
 	swing = 1.0
 	power = pw
-	var d: float = s.dmg * mult
+	if kind == "hero" and not pw:
+		atk_style = preload("res://game/rig.gd").HERO_SEQ[combo % preload("res://game/rig.gd").HERO_SEQ.size()]
+		combo += 1
+		pre_picked = true
+	var d: float = s.dmg * mult * (battle.kingdom.dmg_mult(team, kind) if battle.kingdom != null else 1.0)
 	if buff_t > 0.0:
 		d *= 1.35
 	var charge := (kind == "cav" or (kind == "hero" and mounted)) and sim_speed > 6.0
@@ -950,6 +1294,8 @@ func _strike(t, mult: float, pw: bool) -> void:
 	to.y = 0.0
 	if to.length() > 0.01:
 		rotation.y = atan2(to.x, to.z)
+	d *= rank_mult()
+	gain_xp()
 	battle.melee_hit(self, t, d, pw, charge)
 
 
@@ -961,14 +1307,69 @@ func _shoot(t) -> void:
 	to.y = 0.0
 	if to.length() > 0.01:
 		rotation.y = atan2(to.x, to.z)
+	gain_xp()
 	battle.fire_arrow(self, t)
+
+
+func gain_xp() -> void:
+	if kind == "hero" or kind == "villager" or is_ship:
+		return
+	xp += 1
+	var r := 0
+	if xp >= 60:
+		r = 3
+	elif xp >= 30:
+		r = 2
+	elif xp >= 10:
+		r = 1
+	if r != rank_lv:
+		set_rank(r)
+		if r > 0:
+			max_hp += 8.0
+			hp = minf(max_hp, hp + 20.0)
+
+
+func set_rank(r: int) -> void:
+	rank_lv = r
+	if r <= 0:
+		if rk_lbl != null:
+			rk_lbl.visible = false
+		return
+	if rk_lbl == null:
+		rk_lbl = Label3D.new()
+		rk_lbl.pixel_size = 0.014
+		rk_lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		rk_lbl.no_depth_test = true
+		rk_lbl.modulate = Color(1.0, 0.85, 0.25)
+		rk_lbl.outline_size = 8
+		rk_lbl.position = Vector3(0, 2.7 if kind != "cav" else 3.3, 0)
+		add_child(rk_lbl)
+	rk_lbl.visible = true
+	rk_lbl.text = "★".repeat(r)
+
+
+func rank_mult() -> float:
+	return 1.0 + 0.1 * float(rank_lv)
 
 
 func take_damage(a: float) -> void:
 	if dead:
 		return
+	if battle != null and battle.kingdom != null:
+		a *= battle.kingdom.armor_mult(team, kind)
 	hp -= a
 	flash = 1.0
+	if hit_from != Vector3.ZERO:
+		var dd := hit_from - position
+		dd.y = 0.0
+		if dd.length() > 0.01:
+			var lc := dd.normalized().rotated(Vector3.UP, -rotation.y)
+			hit_dir = Vector2(lc.x, lc.z)
+		hit_from = Vector3.ZERO
+	else:
+		hit_dir = Vector2(randf_range(-0.8, 0.8), 0.6)
+	if a >= 25.0:
+		stagger = 1.0
 	if hp <= 0.0:
 		hp = 0.0
 		die()
@@ -985,7 +1386,7 @@ func die() -> void:
 	if bar:
 		bar.visible = false
 	var has_die: bool = rig != null and Models.has_anim(rig, "die")
-	if kind == "ship":
+	if is_ship:
 		var ts := create_tween()
 		ts.tween_property(body, "position:y", -3.5, 4.0)
 		ts.parallel().tween_property(body, "rotation:z", 0.6, 4.0)
@@ -995,8 +1396,21 @@ func die() -> void:
 		Models.play(rig, "die", true)
 	else:
 		var tw := create_tween()
-		tw.tween_property(body, "rotation:x", -1.5, 0.45)
-		tw.parallel().tween_property(body, "position:y", 0.25, 0.45)
+		if rigged:
+			death_var = randi() % 3
+			death_side = 1.0 if randf() < 0.5 else -1.0
+			if kind == "hero":
+				death_var = 0
+			if killer_style >= 0:
+				death_delay = 0.3
+				if killer_style == 6:
+					death_var = 4
+				elif killer_style == 5 or killer_style == 10:
+					death_var = 3
+			tw.kill()
+		else:
+			tw.tween_property(body, "rotation:x", -1.5, 0.45)
+			tw.parallel().tween_property(body, "position:y", 0.25, 0.45)
 	if horse and horse.visible:
 		var th := create_tween()
 		th.tween_property(horse, "rotation:z", 1.4, 0.5)

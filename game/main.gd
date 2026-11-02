@@ -7,6 +7,13 @@ const Build := preload("res://game/build.gd")
 const LocS := preload("res://game/loc.gd")
 const CardsS := preload("res://game/menucards.gd")
 const SettingsS := preload("res://game/settings.gd")
+const UiFxS := preload("res://game/uifx.gd")
+const TouchScrollS := preload("res://game/touchscroll.gd")
+const IntroS := preload("res://game/intro.gd")
+const Lobby3DS := preload("res://game/lobby3d.gd")
+const MainMenuS := preload("res://game/mainmenu.gd")
+const PlayScreenS := preload("res://game/playscreen.gd")
+const SplashS := preload("res://game/splash.gd")
 const MusicLibS := preload("res://game/music.gd")
 const MenuBgS := preload("res://game/menubg.gd")
 
@@ -34,6 +41,8 @@ var _fps_lbl: Label
 func _ready() -> void:
 	name = "Main"
 	SettingsS.load_all()
+	ProfS.load_all()
+	LocS.install(get_tree())
 	# the game reached its menu: the boot safety flag can go
 	if FileAccess.file_exists("user://boot_try"):
 		DirAccess.remove_absolute(ProjectSettings.globalize_path("user://boot_try"))
@@ -79,7 +88,15 @@ func _ready() -> void:
 	add_child(_menu_music)
 	_menu_music.play()
 	create_tween().tween_property(_menu_music, "volume_db", -8.0, 3.0)
+	UiFxS.prewarm()
+	if get_node_or_null("Backend") == null:
+		add_child(load("res://game/backend.gd").new())
+	TouchScrollS.install(get_tree())
 	_show_menu()
+	if not SplashS.done and OS.get_environment("NOSPLASH") == "":
+		SplashS.start(self, func():
+			if OS.get_environment("NOINTRO") == "":
+				IntroS.start(self, func(): pass))
 
 
 func _process(dt: float) -> void:
@@ -91,7 +108,7 @@ func _process(dt: float) -> void:
 		_title_lbl.scale = Vector2.ONE * (1.0 + 0.025 * sin(_ttime * 1.6))
 	_loc_t -= dt
 	if _loc_t <= 0.0:
-		_loc_t = 0.3
+		_loc_t = 0.5
 		if ui_layer.visible:
 			LocS.apply_tree(ui)
 		_fps_lbl.visible = SettingsS.show_fps
@@ -106,6 +123,9 @@ func back_to_menu() -> void:
 
 
 # ---------------------------------------------------------------- ui helpers
+const UiFx := preload("res://game/uifx.gd")
+const EmblemS := preload("res://game/emblem.gd")
+const ProfS := preload("res://game/profile.gd")
 const GOLD := Color(1, 0.82, 0.35)
 var _footer: HBoxContainer
 var _title_lbl: Label
@@ -129,10 +149,11 @@ func _sb(bg: Color, border: Color, rad := 14, bw := 3) -> StyleBoxFlat:
 func _make_theme() -> Theme:
 	var th := Theme.new()
 	th.default_font_size = 30
-	th.set_stylebox("normal", "Button", _sb(Color(0.16, 0.1, 0.07, 0.95), Color(0.75, 0.55, 0.2)))
-	th.set_stylebox("hover", "Button", _sb(Color(0.28, 0.17, 0.08, 0.98), Color(1, 0.82, 0.35)))
-	th.set_stylebox("pressed", "Button", _sb(Color(0.45, 0.25, 0.06, 1), Color(1, 0.9, 0.5)))
-	th.set_stylebox("disabled", "Button", _sb(Color(0.12, 0.12, 0.14, 0.8), Color(0.3, 0.3, 0.33)))
+	th.set_stylebox("normal", "Button", UiFx.button("normal"))
+	th.set_stylebox("hover", "Button", UiFx.button("hover"))
+	th.set_stylebox("pressed", "Button", UiFx.button("pressed"))
+	th.set_stylebox("disabled", "Button", UiFx.button("disabled"))
+	th.set_stylebox("panel", "PanelContainer", UiFx.panel())
 	th.set_stylebox("focus", "Button", StyleBoxEmpty.new())
 	th.set_color("font_color", "Button", Color(1, 0.93, 0.75))
 	th.set_color("font_hover_color", "Button", Color(1, 1, 0.85))
@@ -151,7 +172,8 @@ func _make_theme() -> Theme:
 func _clear() -> VBoxContainer:
 	for c in ui.get_children():
 		ui.remove_child(c)       # gone at once (queue_free alone left ghost text for a frame)
-		c.queue_free()
+		if c != _lobby:
+			c.queue_free()
 	var bg := MenuBgS.new()
 	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
 	ui.add_child(bg)
@@ -242,41 +264,231 @@ func _set_status(t: String) -> void:
 # ---------------------------------------------------------------- screens
 func _show_menu() -> void:
 	net.stop_listening()
-	var vb := _clear()
-	_title_lbl = _label(vb, "MEDIEVAL WARS", 84 if LocS.lang != "ar" else 64, GOLD)
-	_title_lbl.autowrap_mode = TextServer.AUTOWRAP_OFF
-	_title_lbl.add_theme_constant_override("outline_size", 14)
-	_label(vb, "Swords  -  Bows  -  Kingdoms", 30, Color(0.8, 0.8, 0.85))
-	_label(vb, " ", 20)
-	_button(vb, "PLAY", func(): _show_play())
-	_button(vb, "LOCAL (Wi-Fi)", func(): _show_local())
-	_button(vb, "Settings", func(): _show_settings())
-	_status = _label(vb, "", 26, Color(1, 0.5, 0.4))
-	_wrap(_status)
-	_upd_label = _label(vb, "", 22, Color(0.7, 0.8, 0.9))
-	_upd_btn = _button(vb, "Download update", func(): updater.download())
-	_upd_btn.custom_minimum_size = Vector2(560, 64)
-	_upd_btn.visible = false
-	_label(vb, "build %d" % int(Build.BUILD), 18, Color(0.5, 0.5, 0.55))
+	for c in ui.get_children():
+		ui.remove_child(c)
+		if c != _lobby:
+			c.queue_free()
+	if _lobby == null:
+		_lobby = Lobby3DS.new()
+	else:
+		_lobby.refresh()
+		_lobby.intro()
+	ui.add_child(_lobby)
+	var mm = MainMenuS.new()
+	mm.main = self
+	mm.actions = {
+		"play": func(): _show_play(),
+		"throne": func(): _show_throne(),
+		"king": func(): _show_kingedit(),
+		"castle": func(): _show_castleedit(),
+		"local": func(): _show_local(),
+		"settings": func(): _show_settings(),
+	}
+	ui.add_child(mm)
 	_refresh_update()
+	_fade_in()
+
+
+var _lobby: Control = null
+
+
+func _fade_in() -> void:
+	var f := ColorRect.new()
+	f.color = Color(0, 0, 0, 1)
+	f.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	f.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	ui.add_child(f)
+	var tw := create_tween()
+	tw.tween_property(f, "color:a", 0.0, 0.35)
+	tw.tween_callback(f.queue_free)
+
+
+func _show_castleedit() -> void:
+	_clear()
+	var ce = load("res://game/castleedit.gd").new()
+	ce.back = func(): _show_menu()
+	ui.add_child(ce)
+
+
+# ---------------------------------------------------------------- king creation + throne hall
+var _trait_btns := {}
+var _diff_btns := {}
+
+
+func _mark_sel(btns: Dictionary, sel: String) -> void:
+	for id in btns.keys():
+		var b: Button = btns[id]
+		if id == sel:
+			b.add_theme_stylebox_override("normal", UiFx.button("pressed"))
+			b.add_theme_color_override("font_color", Color(1, 1, 0.85))
+		else:
+			b.remove_theme_stylebox_override("normal")
+			b.remove_theme_color_override("font_color")
+
+
+func _show_king() -> void:
+	var vb := _clear()
+	_title(vb, "Crown your King")
+	var em := EmblemS.new()
+	em.custom_minimum_size = Vector2(90, 90)
+	vb.add_child(em)
+	_label(vb, "Name your realm", 26, Color(0.85, 0.85, 0.9))
+	var ne := LineEdit.new()
+	ne.text = ProfS.king_name
+	ne.placeholder_text = "Kingdom of ..."
+	ne.max_length = 22
+	ne.custom_minimum_size = Vector2(0, 64)
+	ne.alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vb.add_child(ne)
+	_label(vb, "Choose your royal gift", 26, Color(0.85, 0.85, 0.9))
+	_trait_btns = {}
+	var tg := GridContainer.new()
+	tg.columns = 2
+	tg.add_theme_constant_override("h_separation", 10)
+	tg.add_theme_constant_override("v_separation", 10)
+	vb.add_child(tg)
+	for id in ProfS.TRAITS.keys():
+		var d: Dictionary = ProfS.TRAITS[id]
+		var b := Button.new()
+		b.text = LocS.t(String(d.name)) + "\n" + LocS.t(String(d.desc))
+		b.add_theme_font_size_override("font_size", 22)
+		b.custom_minimum_size = Vector2(0, 110)
+		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		b.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		var tid: String = id
+		b.pressed.connect(func():
+			ProfS.trait_id = tid
+			_mark_sel(_trait_btns, tid))
+		tg.add_child(b)
+		_trait_btns[id] = b
+	_mark_sel(_trait_btns, ProfS.trait_id)
+	_label(vb, "Rival kings", 26, Color(0.85, 0.85, 0.9))
+	var dh := HBoxContainer.new()
+	dh.add_theme_constant_override("separation", 10)
+	vb.add_child(dh)
+	_diff_btns = {}
+	for did in ["easy", "normal", "hard"]:
+		var db := Button.new()
+		db.text = LocS.t({"easy": "Gentle", "normal": "Cunning", "hard": "Ruthless"}[did])
+		db.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		db.custom_minimum_size = Vector2(0, 60)
+		var dd: String = did
+		db.pressed.connect(func():
+			ProfS.diff = dd
+			_mark_sel(_diff_btns, dd))
+		dh.add_child(db)
+		_diff_btns[did] = db
+	_mark_sel(_diff_btns, ProfS.diff)
+	_fbutton("CROWN YOUR KING", func():
+		ProfS.king_name = ne.text.strip_edges()
+		ProfS.save()
+		cfg.king = {"name": ProfS.king_name, "trait": ProfS.trait_id, "diff": ProfS.diff}
+		_show_lobby(true), true)
+	_fbutton("Back", func(): _show_play())
+
+
+func _show_kingedit() -> void:
+	_clear()
+	var ke = load("res://game/kingedit.gd").new()
+	ke.back = func(): _show_menu()
+	ui.add_child(ke)
+
+
+func _show_throne() -> void:
+	var vb := _clear()
+	_title(vb, "THRONE HALL")
+	var em := EmblemS.new()
+	em.custom_minimum_size = Vector2(96, 96)
+	vb.add_child(em)
+	var rl := _label(vb, LocS.t(ProfS.rank_name()), 46, Color(1.0, 0.85, 0.4))
+	rl.autowrap_mode = TextServer.AUTOWRAP_OFF
+	var pr: Array = ProfS.rank_progress()
+	var pb := ProgressBar.new()
+	pb.custom_minimum_size = Vector2(0, 26)
+	pb.max_value = float(pr[1])
+	pb.value = float(pr[0])
+	pb.show_percentage = false
+	var fill := StyleBoxFlat.new()
+	fill.bg_color = Color(0.95, 0.72, 0.2)
+	fill.set_corner_radius_all(8)
+	pb.add_theme_stylebox_override("fill", fill)
+	var pbg := StyleBoxFlat.new()
+	pbg.bg_color = Color(0.05, 0.04, 0.06, 0.9)
+	pbg.border_color = Color(0.6, 0.45, 0.2)
+	pbg.set_border_width_all(2)
+	pbg.set_corner_radius_all(8)
+	pb.add_theme_stylebox_override("background", pbg)
+	vb.add_child(pb)
+	var nxt := LocS.t("Renown") + ": %d" % ProfS.renown
+	if String(pr[2]) != "":
+		nxt += "   ->   " + LocS.t(String(pr[2])) + "  (%d)" % (int(pr[1]) - int(pr[0]))
+	_label(vb, nxt, 24, Color(0.85, 0.85, 0.9))
+	_label(vb, LocS.t("Matches") + ": %d     " % ProfS.games + LocS.t("Victories") + ": %d" % ProfS.wins, 24, Color(0.8, 0.85, 0.95))
+	var dc: Dictionary = ProfS.daily_today()
+	var dl := _label(vb, LocS.t(String(dc.text)) + ("   [OK]" if ProfS.daily_done else "   +%d" % int(dc.r)), 26, Color(0.5, 1.0, 0.6) if ProfS.daily_done else Color(1.0, 0.9, 0.55))
+	_wrap(dl)
+	_label(vb, "Achievements", 28, GOLD)
+	var gr := GridContainer.new()
+	gr.columns = 2
+	gr.add_theme_constant_override("h_separation", 10)
+	gr.add_theme_constant_override("v_separation", 10)
+	vb.add_child(gr)
+	for id in ProfS.ACH.keys():
+		var a: Dictionary = ProfS.ACH[id]
+		var got: bool = ProfS.ach.has(id)
+		var b := Button.new()
+		b.text = ("★ " if got else "☆ ") + LocS.t(String(a.name)) + "\n" + LocS.t(String(a.desc))
+		b.add_theme_font_size_override("font_size", 20)
+		b.custom_minimum_size = Vector2(0, 92)
+		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		b.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		b.disabled = not got
+		if got:
+			b.add_theme_color_override("font_disabled_color", Color(1, 0.9, 0.5))
+		gr.add_child(b)
+	_fbutton("Back", func(): _show_menu())
+
+
+
+func _lobby_base() -> void:
+	for c in ui.get_children():
+		ui.remove_child(c)
+		if c != _lobby:
+			c.queue_free()
+	if _lobby == null:
+		_lobby = Lobby3DS.new()
+	else:
+		_lobby.refresh()
+	ui.add_child(_lobby)
 
 
 func _show_play() -> void:
-	var vb := _clear()
-	_title(vb, "Choose your game")
-	var cards := CardsS.new()
-	cards.custom_minimum_size = Vector2(1000, 430)
-	cards.cards = [
-		{"id": "battle", "title": "Solo Battle", "desc": "Command your army against the enemy", "art": "battle"},
-		{"id": "kingdom", "title": "Solo Kingdom", "desc": "Build a castle city, then rule or conquer", "art": "kingdom"},
-	]
-	cards.chosen.connect(func(id):
+	_lobby_base()
+	var ps = PlayScreenS.new()
+	ps.main = self
+	ps.on_back = func(): _show_menu()
+	ps.on_pick = func(id: String):
+		if id == "world":
+			_show_world()
+			return
 		net.start_solo()
-		cfg.mode = String(id)
+		cfg.mode = id
 		_mode = "solo"
-		_show_lobby(true))
-	vb.add_child(cards)
-	_fbutton("Back", func(): _show_menu())
+		if id == "kingdom":
+			_show_king()
+		else:
+			_show_lobby(true)
+	ui.add_child(ps)
+	_fade_in()
+
+
+func _show_world() -> void:
+	if _menu_music != null:
+		_menu_music.stop()
+	ui_layer.visible = false
+	var w = load("res://game/world.gd").new()
+	w.main = self
+	add_child(w)
 
 
 func _show_local() -> void:
@@ -348,8 +560,53 @@ func _show_settings() -> void:
 		SettingsS.show_fps = not SettingsS.show_fps
 		SettingsS.save()
 		_show_settings())
+	_button(vb, "Gift code", func(): _show_code())
 	_label(vb, "Low = fastest. Use it if the game is slow or the phone gets hot.", 22, Color(0.7, 0.7, 0.75))
 	_fbutton("Back", func(): _show_menu())
+	LocS.apply_tree(ui)
+
+
+func _show_code() -> void:
+	var vb := _clear()
+	_title(vb, "Gift code")
+	var le := LineEdit.new()
+	le.placeholder_text = "ABCD-1234"
+	le.custom_minimum_size = Vector2(0, 80)
+	le.add_theme_font_size_override("font_size", 34)
+	le.alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vb.add_child(le)
+	le.context_menu_enabled = true
+	le.shortcut_keys_enabled = true
+	le.selecting_enabled = true
+	le.virtual_keyboard_enabled = true
+	var res := _label(vb, " ", 26, Color(1, 0.9, 0.6))
+	var cr := HBoxContainer.new()
+	cr.add_theme_constant_override("separation", 12)
+	vb.add_child(cr)
+	var pb := _button(cr, "Paste", func():
+		le.text = DisplayServer.clipboard_get().strip_edges()
+		le.caret_column = le.text.length())
+	pb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var cb2 := _button(cr, "Copy", func():
+		DisplayServer.clipboard_set(le.text))
+	cb2.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var xb := _button(cr, "Clear", func(): le.text = "")
+	xb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_button(vb, "Redeem", func():
+		var bk = get_node_or_null("Backend")
+		if bk == null or le.text.strip_edges() == "":
+			return
+		res.text = LocS.t("Connecting... (the first try can take a minute)")
+		bk.redeem(le.text, func(ok: bool, txt: String):
+			if not is_instance_valid(res):
+				return
+			if ok:
+				res.text = LocS.t("Reward received! Renown") + " " + txt
+			elif txt == "offline":
+				res.text = LocS.t("Not connected to the server.")
+			else:
+				res.text = LocS.t("Code not accepted") + " (" + txt + ")"))
+	_fbutton("Back", func(): _show_settings())
 	LocS.apply_tree(ui)
 
 
