@@ -547,21 +547,30 @@ func _show_settings() -> void:
 		SettingsS.set_lang("en" if SettingsS.lang == "ar" else "ar")
 		SettingsS.apply_global()
 		_show_settings())
-	_button(vb, "Quality: %s" % SettingsS.quality_name(), func():
-		SettingsS.quality = (SettingsS.quality + 1) % 3
-		SettingsS.save()
-		_show_settings())
-	_button(vb, "Frame rate: %d" % SettingsS.fps, func():
-		SettingsS.fps = {30: 60, 60: 120, 120: 30}[SettingsS.fps]
-		SettingsS.save()
-		SettingsS.apply_global()
-		_show_settings())
+	_label(vb, "Device preset", 26, Color(0.85, 0.85, 0.9))
+	var pr := HBoxContainer.new()
+	pr.add_theme_constant_override("separation", 8)
+	vb.add_child(pr)
+	for i in SettingsS.PRESETS.size():
+		var pb := Button.new()
+		pb.text = String(SettingsS.PRESETS[i])
+		pb.custom_minimum_size = Vector2(0, 70)
+		pb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		pb.add_theme_font_size_override("font_size", 24)
+		pb.pressed.connect(func():
+			SettingsS.apply_preset(i)
+			_show_settings())
+		pr.add_child(pb)
+	for k in ["view", "scale", "fps", "shadows", "trees", "aa", "fx", "auto"]:
+		_button(vb, "%s: %s" % [String({"fps": "Frame rate", "scale": "Resolution", "view": "View distance", "shadows": "Shadows", "trees": "Trees", "aa": "Smooth edges", "fx": "Effects (glow, haze)", "auto": "Auto quality"}[k]), SettingsS.opt_text(k)], func():
+			SettingsS.cycle(k)
+			_show_settings())
 	_button(vb, "FPS counter: %s" % ("ON" if SettingsS.show_fps else "OFF"), func():
 		SettingsS.show_fps = not SettingsS.show_fps
 		SettingsS.save()
 		_show_settings())
 	_button(vb, "Gift code", func(): _show_code())
-	_label(vb, "Low = fastest. Use it if the game is slow or the phone gets hot.", 22, Color(0.7, 0.7, 0.75))
+	_label(vb, "Weak phone? Choose Potato or Low. Auto quality lowers the resolution when the game gets slow.", 22, Color(0.7, 0.7, 0.75))
 	_fbutton("Back", func(): _show_menu())
 	LocS.apply_tree(ui)
 

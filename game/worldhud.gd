@@ -23,6 +23,7 @@ var btn_home: Button
 var btn_attack: Button
 var btn_ctx: Button
 var lbl_hp: Label
+var lbl_chat: Label
 var dlg_root: Control
 var dlg_body: VBoxContainer
 var mini: Control
@@ -184,6 +185,11 @@ func _build_play() -> void:
 	lbl_hp.position = Vector2(16, 114)
 	lbl_hp.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	lbl_hp.autowrap_mode = TextServer.AUTOWRAP_OFF
+	lbl_chat = _lbl(play_root, "", 18, Color(0.9, 0.95, 1.0))
+	lbl_chat.position = Vector2(20, 290)
+	lbl_chat.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	lbl_chat.autowrap_mode = TextServer.AUTOWRAP_OFF
+	lbl_chat.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	# joystick
 	joy = Control.new()
 	joy.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_LEFT)
@@ -696,6 +702,28 @@ func dialog(title: String, lines: Array, buttons: Array, cols := 2, reopen := Ca
 	dlg_root.visible = true
 
 
+const SettingsS := preload("res://game/settings.gd")
+const OPT_LABELS := {"fps": "Frame rate", "scale": "Resolution", "view": "View distance", "shadows": "Shadows", "trees": "Trees", "aa": "Smooth edges", "fx": "Effects (glow, haze)", "auto": "Auto quality"}
+
+
+func open_settings() -> void:
+	var lines: Array = [LocS.t("Pick a preset for your device, then fine-tune. Weak phone: Potato or Low."), LocS.t("View distance and trees change how much of the world is drawn.")]
+	var btns: Array = []
+	for i in SettingsS.PRESETS.size():
+		btns.append([LocS.t(String(SettingsS.PRESETS[i])), "gear", func():
+			SettingsS.apply_preset(i)
+			world.apply_graphics(true), true])
+	for k in ["view", "scale", "fps", "shadows", "trees", "aa", "fx", "auto"]:
+		btns.append(["%s: %s" % [LocS.t(String(OPT_LABELS[k])), LocS.t(SettingsS.opt_text(k))], "level", func():
+			SettingsS.cycle(k)
+			world.apply_graphics(k == "view" or k == "trees"), true])
+	btns.append([LocS.t("FPS counter") + ": " + (LocS.t("On") if SettingsS.show_fps else LocS.t("Off")), "gear", func():
+		SettingsS.show_fps = not SettingsS.show_fps
+		SettingsS.save(), true])
+	btns.append([LocS.t("Close"), "gear", func(): pass])
+	dialog(LocS.t("Graphics settings"), lines, btns, 3, func(): open_settings())
+
+
 func pick_image(cb: Callable) -> void:
 	OS.request_permissions()
 	var fd := FileDialog.new()
@@ -768,6 +796,11 @@ func tick(dt: float) -> void:
 	lbl_net.text = (LocS.t("Online world") + " - %d " % world.online_count + LocS.t("other players")) if world.online_state == "online" else LocS.t("Offline world - lords only")
 	lbl_net.add_theme_color_override("font_color", Color(0.6, 1, 0.7) if world.online_state == "online" else Color(0.85, 0.8, 0.6))
 	refresh_buttons()
+	var ct := ""
+	for cl in world.life.chat_lines:
+		if world.life.t - float(cl[1]) < 14.0:
+			ct += String(cl[0]) + "\n"
+	lbl_chat.text = ct
 	var lf2 = world.life
 	if lf2.raiders.size() > 0 or lf2.king_hp < lf2.king_max - 0.5:
 		lbl_hp.text = "%s %d / %d" % [LocS.t("Health"), int(lf2.king_hp), int(lf2.king_max)] + (("   -   %d %s" % [lf2.raiders.size(), LocS.t("raiders")]) if lf2.raiders.size() > 0 else "")

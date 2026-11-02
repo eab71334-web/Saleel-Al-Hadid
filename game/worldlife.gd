@@ -67,6 +67,13 @@ var greeted := {}               # lord name -> day
 var diplo_cd := {}
 var online_players := {}        # pid -> {name,level,x,z,node,label}
 var last_day := 1
+var chat_after := 0
+var pvp := false
+var board: Array = []
+var last_attacker := ""
+var last_hit_t := -99.0
+var chat_lines: Array = []       # [text, born]
+const PHRASES := {"help": "Help me!", "coming": "I am coming!", "thanks": "Thank you!", "attack": "Attack!", "peace": "Peace?", "hello": "Hello!", "gg": "Well fought!", "trade": "Want to trade?", "e_sword": "[sword]", "e_crown": "[crown]", "e_smile": ":)", "e_fire": "[fire]"}
 
 
 func _ready() -> void:
@@ -932,6 +939,7 @@ func king_attack() -> void:
 		world.king_yaw = atan2(dv.x, dv.z)
 	world.king.swing = 1.0
 	Snd.play(world, "click", -2.0, 0.6)
+	_pvp_strike()
 	await get_tree().create_timer(0.28).timeout
 	if not is_instance_valid(world.king):
 		return
@@ -1186,6 +1194,7 @@ func update_online(e: Dictionary) -> void:
 	o.z = pz
 	o.name = String(e.get("name", "Player"))
 	o.level = int(e.get("level", 1))
+	o.pvp = int(e.get("pvp", 0)) == 1
 	(o.label as Label3D).text = "%s  Lv %d" % [o.name, o.level]
 	for a in allies:
 		if String(a.id) == pid:
@@ -1242,6 +1251,16 @@ func on_msgs(msgs: Array) -> void:
 			"break":
 				allies = allies.filter(func(a): return String(a.id) != from)
 				toast("%s: %s" % [fname, T("alliance broken")], 3.5)
+			"hit":
+				on_pvp_hit(from, float(d.get("dmg", 10.0)))
+			"loot":
+				var lt := int(d.get("amount", 0))
+				world.res.gold += lt
+				toast("%s %s +%d" % [T("You plundered"), fname, lt], 4.0)
+			"chat":
+				add_chat(fname + " (" + T("Allies") + ")", String(d.get("code", "")))
+				if String(d.get("code", "")) == "help":
+					world.hud.waypoint = Vector2(float(d.get("x", 0.0)), float(d.get("z", 0.0)))
 			"muster":
 				world.hud.waypoint = Vector2(float(d.get("x", 0.0)), float(d.get("z", 0.0)))
 				toast("%s %s" % [fname, T("calls the allied army - see the map")], 6.0)
@@ -1462,6 +1481,10 @@ func open_realm() -> void:
 	btns.append([T("Hang a portrait on the throne"), "heart", func(): pick_portrait()])
 	if FileAccess.file_exists(PORTRAIT):
 		btns.append([T("Remove portrait"), "foe", func(): clear_portrait(), true])
+	btns.append(["PvP: " + (T("ON") if pvp else T("OFF")), "sword", func(): toggle_pvp(), true])
+	btns.append([T("Leaderboard"), "level", func(): open_board()])
+	btns.append([T("Quick chat"), "talk", func(): open_chat()])
+	btns.append([T("Graphics settings"), "gear", func(): world.hud.open_settings()])
 	btns.append([T("Close"), "gear", func(): pass])
 	world.hud.dialog(T("Your Realm"), lines, btns, 2, func(): open_realm())
 
@@ -1471,3 +1494,130 @@ func pick_portrait() -> void:
 		toast(T("Your throne: castle level 3"))
 		return
 	world.hud.pick_image(func(path): set_portrait(path))
+
+
+# ------------------------------------------------------------------ quick chat (phrase codes only)
+func chat_text(code: String) -> String:
+	return T(String(PHRASES.get(code, code)))
+
+
+func add_chat(who: String, code: String, col := "") -> void:
+	chat_lines.append(["%s: %s" % [who, chat_text(code)], t])
+	while chat_lines.size() > 5:
+		chat_lines.pop_front()
+
+
+func send_chat(code: String, scope: String) -> void:
+	add_chat(T("You"), code)
+	var b = bk()
+	if b == null or b.base_url == "":
+		toast(T("Offline world - nobody can hear you"), 2.0)
+		return
+	if scope == "all":
+		b._http_post("/api/world/chat", {"player_id": b.player_id, "code": code, "x": world.king_pos.x, "z": world.king_pos.z}, func(_c, _d): pass)
+	else:
+		for a in allies:
+			if String(a.kind) == "online":
+				net_send(String(a.id), "chat", {"code": code, "x": world.king_pos.x, "z": world.king_pos.z, "ally": true})
+
+
+func poll_chat() -> void:
+	var b = bk()
+	if b == null or b.base_url == "":
+		return
+	b._http_get("/api/world/chat?after=%d" % chat_after, func(code, d):
+		if code != 200 or not (d is Dictionary):
+			return
+		var first := chat_after == 0
+		chat_after = int(d.get("last", chat_after))
+		if first:
+			return
+		for m in d.get("chat", []):
+			if String(m.get("from", "")) == String(b.player_id):
+				continue
+			add_chat(String(m.get("name", "Player")), String(m.get("code", "")))
+			if String(m.code) == "help" and Vector2(world.king_pos.x - float(m.x), world.king_pos.z - float(m.z)).length() < 900.0:
+				world.hud.waypoint = Vector2(float(m.x), float(m.z)))
+
+
+func open_chat() -> void:
+	var btns: Array = []
+	for c in PHRASES.keys():
+		btns.append([chat_text(c), "talk", func(): send_chat(c, "all"), true])
+	var ally_btns: Array = []
+	for c in ["help", "coming", "attack", "thanks"]:
+		ally_btns.append(["%s (%s)" % [chat_text(c), T("Allies")], "flag", func(): send_chat(c, "allies"), true])
+	btns.append_array(ally_btns)
+	btns.append([T("Close"), "gear", func(): pass])
+	world.hud.dialog(T("Quick chat"), [T("Everyone nearby in the online world hears public phrases. Ally phrases go only to your allies.")], btns, 3, func(): open_chat())
+
+
+# ------------------------------------------------------------------ PvP (both players must have PvP switched on)
+func toggle_pvp() -> void:
+	if world.level < 8:
+		toast(T("PvP: castle level 8"))
+		return
+	pvp = not pvp
+	toast(T("PvP is now") + " " + (T("ON - other players with PvP can fight you") if pvp else T("OFF")), 3.5)
+
+
+func _pvp_strike() -> void:
+	if not pvp:
+		return
+	await get_tree().create_timer(0.28).timeout
+	for pid in online_players.keys():
+		var o: Dictionary = online_players[pid]
+		if not bool(o.get("pvp", false)) or is_ally_id(pid):
+			continue
+		var d := Vector2(world.king_pos.x - float(o.x), world.king_pos.z - float(o.z)).length()
+		if d < 4.2:
+			net_send(String(pid), "hit", {"dmg": 14.0 + float(world.level) * 1.0})
+			world.stub._burst(Vector3(float(o.x), world.king_pos.y + 1.3, float(o.z)), Color(0.9, 0.2, 0.1), 7, 2.5, false)
+			Snd.play(world, "hover", -2.0, 0.7)
+
+
+func is_ally_id(pid: String) -> bool:
+	for a in allies:
+		if String(a.id) == pid:
+			return true
+	return false
+
+
+func on_pvp_hit(from: String, dmg: float) -> void:
+	if not pvp or is_ally_id(from) or sitting:
+		return
+	last_attacker = from
+	last_hit_t = t
+	world.damage_king(clampf(dmg, 1.0, 60.0))
+
+
+# called by the world when the king falls: the killer (if a recent PvP hit) takes part of the gold
+func plunder_for_attacker() -> int:
+	if last_attacker != "" and t - last_hit_t < 12.0:
+		var loot := int(world.res.gold * 0.1)
+		world.res.gold -= loot
+		net_send(last_attacker, "loot", {"amount": loot})
+		last_attacker = ""
+		return loot
+	return 0
+
+
+func open_board() -> void:
+	var rows: Array = []
+	for e in board:
+		if e is Dictionary:
+			rows.append({"name": String(e.get("name", "Player")), "level": int(e.get("level", 1)), "kills": int(e.get("kills", 0)), "gold": int(e.get("gold", 0))})
+	rows.append({"name": T("You"), "level": world.level, "kills": int(stats.get("kills", 0)), "gold": int(world.res.gold)})
+	var lines: Array = []
+	rows.sort_custom(func(a, b): return a.level > b.level or (a.level == b.level and a.kills > b.kills))
+	lines.append(T("Highest castles"))
+	for i in mini(8, rows.size()):
+		lines.append("%d.  %s   -   %s %d   -   %s %d" % [i + 1, rows[i].name, T("Level"), rows[i].level, T("Defeated"), rows[i].kills])
+	rows.sort_custom(func(a, b): return a.gold > b.gold)
+	lines.append("")
+	lines.append(T("Richest kings"))
+	for i in mini(5, rows.size()):
+		lines.append("%d.  %s   -   %d %s" % [i + 1, rows[i].name, rows[i].gold, T("Gold")])
+	if board.is_empty():
+		lines.append(T("Offline world - only you are listed. Deploy the world server to see real players."))
+	world.hud.dialog(T("Leaderboard"), lines, [[T("Close"), "gear", func(): pass]], 1)

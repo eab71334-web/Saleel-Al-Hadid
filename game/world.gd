@@ -16,7 +16,7 @@ const HudS := preload("res://game/worldhud.gd")
 const SAVE := "user://world.cfg"
 const Prog := preload("res://game/worldprog.gd")
 const LifeS := preload("res://game/worldlife.gd")
-const CHUNK_R := 6
+const SettingsS := preload("res://game/settings.gd")
 
 class Stub extends Node:
 	var HORSE_RIDING := false
@@ -128,6 +128,7 @@ func _ready() -> void:
 		castles.append(own_castle)
 		WG.add_site(cx, cz)
 	_build_env()
+	SettingsS.apply_world(self)
 	_build_king()
 	hud = HudS.new()
 	hud.world = self
@@ -439,15 +440,15 @@ func exit_world() -> void:
 func _request_chunks(p: Vector3) -> void:
 	var c0 := Vector2i(int(floor(p.x / WG.CHUNK)), int(floor(p.z / WG.CHUNK)))
 	var want := {}
-	for dx in range(-CHUNK_R, CHUNK_R + 1):
-		for dz in range(-CHUNK_R, CHUNK_R + 1):
+	for dx in range(-SettingsS.chunk_r(), SettingsS.chunk_r() + 1):
+		for dz in range(-SettingsS.chunk_r(), SettingsS.chunk_r() + 1):
 			var c := Vector2i(c0.x + dx, c0.y + dz)
 			if absi(c.x * 128) > 4200 or absi(c.y * 128) > 4200:
 				continue
 			want[c] = true
 	for c in chunks.keys():
 		var d := maxi(absi(c.x - c0.x), absi(c.y - c0.y))
-		if d > CHUNK_R + 1:
+		if d > SettingsS.chunk_r() + 1:
 			(chunks[c] as Node3D).queue_free()
 			chunks.erase(c)
 	pending.clear()
@@ -545,7 +546,7 @@ func _trees(root: Node3D, c: Vector2i, ox: float, oz: float, local: Array) -> vo
 	rng.seed = (c.x * 73856093) ^ (c.y * 19349663)
 	var t1: Array = []
 	var t2: Array = []
-	for i in 46:
+	for i in int(46.0 * SettingsS.TREE_K[SettingsS.s_trees]):
 		var x := ox + rng.randf() * WG.CHUNK
 		var z := oz + rng.randf() * WG.CHUNK
 		if WG.forest(x, z) < 0.02 - (0.0 if rng.randf() < 0.9 else 0.3):
@@ -785,7 +786,7 @@ func _net_tick() -> void:
 		return
 	if level > 0:
 		var C := CK.merged(ProfS.castle)
-		bk._http_post("/api/world/castle", {"player_id": bk.player_id, "name": _my_name(), "x": cx, "z": cz, "level": level, "banner": int(C.banner), "emblem": int(C.emblem), "px": king_pos.x, "pz": king_pos.z, "game": "saleelalhadid"}, func(_code, _d): pass)
+		bk._http_post("/api/world/castle", {"player_id": bk.player_id, "name": _my_name(), "x": cx, "z": cz, "level": level, "banner": int(C.banner), "emblem": int(C.emblem), "px": king_pos.x, "pz": king_pos.z, "pvp": life.pvp, "kills": int(life.stats.get("kills", 0)), "gold": int(res.gold), "game": "saleelalhadid"}, func(_code, _d): pass)
 		bk._http_get("/api/world/inbox?player_id=" + String(bk.player_id).uri_encode(), func(code, d):
 			if code == 200 and d is Dictionary and d.has("msgs"):
 				life.on_msgs(d["msgs"]))
@@ -803,6 +804,7 @@ func _net_tick() -> void:
 			return
 		online_state = "online"
 		online_count = 0
+		life.board = arr
 		var seen := {}
 		for e in arr:
 			if not (e is Dictionary) or String(e.get("player_id", "")) == bk.player_id:
@@ -825,8 +827,20 @@ func _net_tick() -> void:
 
 
 # ------------------------------------------------------------------ per frame
+func apply_graphics(rebuild := true) -> void:
+	SettingsS.apply_global()
+	SettingsS.apply_world(self)
+	if rebuild:
+		for c in chunks.keys():
+			(chunks[c] as Node3D).queue_free()
+		chunks.clear()
+		pending.clear()
+		_request_chunks(king_pos)
+
+
 func _process(dt: float) -> void:
 	t_all += dt
+	SettingsS.auto_tick(dt, get_viewport())
 	if state == "pick" or state == "load":
 		return
 	tod += dt / 20.0
@@ -864,6 +878,7 @@ func _process(dt: float) -> void:
 	if net_t <= 0.0:
 		net_t = 6.0
 		_net_tick()
+		life.poll_chat()
 	if state == "found":
 		found_t += dt
 		var e := clampf(found_t / 6.0, 0.0, 1.0)
@@ -1029,8 +1044,10 @@ func damage_king(d: float) -> void:
 		king_dead = false
 		if mounted:
 			life.dismount()
-		var lost := int(res.gold * 0.08)
-		res.gold -= lost
+		var lost: int = life.plunder_for_attacker()
+		var own := int(res.gold * 0.04)
+		res.gold -= own
+		lost += own
 		life.king_hp = life.king_max
 		king_pos = _spawn_pos()
 		_request_chunks(king_pos)

@@ -2,7 +2,10 @@
 // Players POST their castle; everybody GETs the list and sees the other players' castles in the world.
 //   GET  /api/world/castles?game=saleelalhadid   -> { "castles": [ {player_id,name,x,z,level,banner,emblem,px,pz,updated} ] }
 //   POST /api/world/castle  {player_id,name,x,z,level,banner,emblem,px,pz}  -> { "ok": true }   (px,pz = where the king is now)
+//   (castle POST also takes pvp: 0/1 - players with pvp on can fight each other; hits travel through /send as type "hit")
 //   POST /api/world/send    {from,to,type,data}   -> { "ok": true }   mailbox: tax offers, alliance proposals, replies, muster calls
+//   POST /api/world/chat    {player_id,code,x,z}   public quick-chat (phrase codes only)
+//   GET  /api/world/chat?after=ID   -> { chat:[{id,from,name,code,x,z,ts}], last }
 //   GET  /api/world/inbox?player_id=ID            -> { "msgs": [ {id,from,from_name,type,data,ts} ] }   (messages are removed once read)
 //   GET  /health
 // Deploy on Render as a new Web Service (build: none, start: node server.js) and put its URL in the game
@@ -16,6 +19,8 @@ let castles = {};
 try { castles = JSON.parse(fs.readFileSync(FILE, "utf8")); } catch (e) { castles = {}; }
 let dirty = false;
 const inbox = {};
+const chatlog = [];
+let chatId = 0;
 let msgId = 0;
 setInterval(() => { if (dirty) { try { fs.writeFileSync(FILE, JSON.stringify(castles)); dirty = false; } catch (e) {} } }, 15000);
 
@@ -59,10 +64,32 @@ http.createServer((req, res) => {
         name: String(j.name || "Player").replace(/[<>]/g, "").slice(0, 24),
         x: num(j.x, -4000, 4000, 0), z: num(j.z, -4000, 4000, 0),
         level, banner: Math.round(num(j.banner, 0, 6, 0)), emblem: Math.round(num(j.emblem, 0, 4, 0)),
+        pvp: j.pvp ? 1 : 0, kills: Math.round(num(j.kills, 0, 1e6, 0)), gold: Math.round(num(j.gold, 0, 1e9, 0)),
         px: num(j.px, -4000, 4000, num(j.x, -4000, 4000, 0)), pz: num(j.pz, -4000, 4000, num(j.z, -4000, 4000, 0)),
         updated: Date.now(),
       };
       dirty = true;
+      send(res, 200, { ok: true });
+    });
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/api/world/chat") {
+    const after = Number(url.searchParams.get("after") || 0);
+    return send(res, 200, { chat: chatlog.filter(m => m.id > after), last: chatId });
+  }
+  if (req.method === "POST" && url.pathname === "/api/world/chat") {
+    let body = "";
+    req.on("data", d => { body += d; if (body.length > 1024) req.destroy(); });
+    req.on("end", () => {
+      let j;
+      try { j = JSON.parse(body); } catch (e) { return send(res, 400, { error: "bad json" }); }
+      const id = String(j.player_id || "").slice(0, 40);
+      if (!id || !castles[id]) return send(res, 400, { error: "unknown player" });
+      // only ready-made phrase codes are accepted (no free text)
+      const code = String(j.code || "").replace(/[^a-z0-9_]/g, "").slice(0, 16);
+      if (!code) return send(res, 400, { error: "code" });
+      chatlog.push({ id: ++chatId, from: id, name: castles[id].name, code, x: num(j.x, -4000, 4000, 0), z: num(j.z, -4000, 4000, 0), ts: Date.now() });
+      while (chatlog.length > 60) chatlog.shift();
       send(res, 200, { ok: true });
     });
     return;
