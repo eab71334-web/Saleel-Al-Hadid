@@ -85,6 +85,11 @@ var sim_speed := 0.0
 var anim_t := 0.0
 var slot := Vector3.ZERO
 var flash := 0.0
+var _lod_acc := 0.0
+var _lod_n := 0
+var _yaw_prev := 0.0
+var _lean := 0.0
+var stagger := 0.0
 var sc := 1.0
 var body: Node3D
 var arm: Node3D
@@ -116,7 +121,6 @@ var pose_side := 1.0
 var map_rot := Vector3(2.4, 0.0, 0.0)
 var map_t := 0.0
 var map_open := 0.0
-var stagger := 0.0
 var hit_dir := Vector2.ZERO
 var hit_from := Vector3.ZERO
 var role := ""
@@ -634,7 +638,22 @@ func _process(dt: float) -> void:
 	body.position.y = (ride_y if mounted else 0.0) + (absf(ph) * 0.05 if (mv and rig == null and not rigged) else 0.0)
 	body.scale = Vector3.ONE * sc * (1.0 + flash * 0.1)
 	if rigged:
-		RigS.animate(self, dt)
+		# animation level of detail: far-away soldiers animate at a lower rate (saves CPU on big armies)
+		var cam := get_viewport().get_camera_3d()
+		var dist: float = position.distance_to(cam.global_position) if cam != null else 0.0
+		var skip: int = 0 if (dist < 70.0 or kind == "hero") else (2 if dist < 130.0 else 5)
+		_lod_acc += dt
+		_lod_n += 1
+		if _lod_n > skip or swing > 0.0:
+			_lod_n = 0
+			RigS.animate(self, _lod_acc)
+			_lod_acc = 0.0
+		# turning leans the body into the curve; a hit staggers it backwards
+		var yaw_rate: float = wrapf(rotation.y - _yaw_prev, -PI, PI) / maxf(dt, 0.0001)
+		_yaw_prev = rotation.y
+		_lean = lerpf(_lean, clampf(-yaw_rate * 0.05, -0.18, 0.18) * clampf(sim_speed / 5.0, 0.0, 1.0), clampf(dt * 6.0, 0.0, 1.0))
+		body.rotation.z = _lean
+		body.rotation.x = lerpf(body.rotation.x, -stagger * 0.35, clampf(dt * 16.0, 0.0, 1.0))
 	elif rig == null and not is_ship and kind != "villager" and cape != null or (rig == null and kind == "archer"):
 		var run: float = clampf(sim_speed / 6.0, 0.0, 1.0)
 		var breathe := sin(anim_t * 1.6) * 0.012
