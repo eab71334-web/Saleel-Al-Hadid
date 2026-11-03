@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Builds skinned, animated humanoid .glb characters from the MakeHuman base mesh + default rig (CC0).
 import json, struct, math, sys, numpy as np
-D = '/home/claude/eab71334-web/makehuman/makehuman/data/'  # path of the MakeHuman repo (CC0 assets)
+D = '/home/claude/eab71334-web/makehuman/makehuman/data/'
 SC = 0.1  # decimetres -> metres
 
 # ---------- mesh
