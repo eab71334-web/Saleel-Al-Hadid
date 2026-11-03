@@ -18,6 +18,7 @@ const OPT := {
 	"aa": [0, 1],                     # off / 2x
 	"fx": [0, 1],                     # glow, fog, particles
 	"auto": [0, 1],                   # adaptive resolution
+	"chars": [0, 1],                  # classic blocky / realistic (MakeHuman) characters
 }
 const NAMES := {
 	"view": ["Very short", "Short", "Medium", "Long", "Very long"],
@@ -26,6 +27,7 @@ const NAMES := {
 	"aa": ["Off", "On"],
 	"fx": ["Off", "On"],
 	"auto": ["Off", "On"],
+	"chars": ["Classic", "Realistic"],
 }
 const VIEW_CHUNKS := [2, 3, 4, 6, 8]
 const TREE_K := [0.0, 0.35, 1.0, 1.5]
@@ -36,6 +38,7 @@ static var s_trees := 2
 static var s_aa := 1
 static var s_fx := 1
 static var s_auto := 0
+static var s_chars := 1
 static var scale_live := 1.0
 static var _acc := 0.0
 static var _frames := 0
@@ -55,6 +58,7 @@ static func load_all() -> void:
 		s_aa = int(cf.get_value("g", "aa", 1))
 		s_fx = int(cf.get_value("g", "fx", 1))
 		s_auto = int(cf.get_value("g", "auto", 0))
+		s_chars = int(cf.get_value("g", "chars", 1))
 	else:
 		# first start: weaker phones / Arabic phones get sensible defaults
 		var loc := OS.get_locale_language()
@@ -78,6 +82,7 @@ static func save() -> void:
 	cf.set_value("g", "trees", s_trees)
 	cf.set_value("g", "aa", s_aa)
 	cf.set_value("g", "fx", s_fx)
+	cf.set_value("g", "chars", s_chars)
 	cf.set_value("g", "auto", s_auto)
 	cf.save(PATH)
 
@@ -173,6 +178,7 @@ static func get_opt(key: String) -> int:
 		"aa": return s_aa
 		"fx": return s_fx
 		"auto": return s_auto
+		"chars": return s_chars
 	return 0
 
 
@@ -188,6 +194,7 @@ static func set_opt(key: String, v: int) -> void:
 		"aa": s_aa = v
 		"fx": s_fx = v
 		"auto": s_auto = v
+		"chars": s_chars = v
 
 
 static func opt_text(key: String) -> String:

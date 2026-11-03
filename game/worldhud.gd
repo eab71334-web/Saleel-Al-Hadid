@@ -703,7 +703,7 @@ func dialog(title: String, lines: Array, buttons: Array, cols := 2, reopen := Ca
 
 
 const SettingsS := preload("res://game/settings.gd")
-const OPT_LABELS := {"fps": "Frame rate", "scale": "Resolution", "view": "View distance", "shadows": "Shadows", "trees": "Trees", "aa": "Smooth edges", "fx": "Effects (glow, haze)", "auto": "Auto quality"}
+const OPT_LABELS := {"fps": "Frame rate", "scale": "Resolution", "view": "View distance", "shadows": "Shadows", "trees": "Trees", "aa": "Smooth edges", "fx": "Effects (glow, haze)", "auto": "Auto quality", "chars": "Characters"}
 
 
 func open_settings() -> void:
@@ -713,7 +713,7 @@ func open_settings() -> void:
 		btns.append([LocS.t(String(SettingsS.PRESETS[i])), "gear", func():
 			SettingsS.apply_preset(i)
 			world.apply_graphics(true), true])
-	for k in ["view", "scale", "fps", "shadows", "trees", "aa", "fx", "auto"]:
+	for k in ["view", "scale", "fps", "shadows", "trees", "aa", "fx", "auto", "chars"]:
 		btns.append(["%s: %s" % [LocS.t(String(OPT_LABELS[k])), LocS.t(SettingsS.opt_text(k))], "level", func():
 			SettingsS.cycle(k)
 			world.apply_graphics(k == "view" or k == "trees"), true])

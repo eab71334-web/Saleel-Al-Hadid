@@ -9,6 +9,7 @@ extends RefCounted
 # you can add models one at a time.  Animations are retargeted by bone name
 # (best with Mixamo characters + Mixamo animations, "In Place" ticked).
 
+const SettingsS := preload("res://game/settings.gd")
 const MODEL_DIR := "res://game/models/"
 const ANIM_DIR := "res://game/anims/"
 const EXTS := [".glb", ".gltf", ".fbx", ".tscn"]
@@ -59,6 +60,8 @@ static func available_kinds() -> Array:
 # Returns null (use procedural model) or a rig dictionary:
 #   {root: Node3D, player: AnimationPlayer|null, names: {logical: anim name}, cur: String}
 static func build(kind: String):
+	if SettingsS.s_chars == 0:
+		return null
 	var path := find_file(MODEL_DIR, kind)
 	if path == "":
 		return null

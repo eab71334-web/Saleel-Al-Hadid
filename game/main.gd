@@ -561,8 +561,8 @@ func _show_settings() -> void:
 			SettingsS.apply_preset(i)
 			_show_settings())
 		pr.add_child(pb)
-	for k in ["view", "scale", "fps", "shadows", "trees", "aa", "fx", "auto"]:
-		_button(vb, "%s: %s" % [String({"fps": "Frame rate", "scale": "Resolution", "view": "View distance", "shadows": "Shadows", "trees": "Trees", "aa": "Smooth edges", "fx": "Effects (glow, haze)", "auto": "Auto quality"}[k]), SettingsS.opt_text(k)], func():
+	for k in ["view", "scale", "fps", "shadows", "trees", "aa", "fx", "auto", "chars"]:
+		_button(vb, "%s: %s" % [String({"fps": "Frame rate", "scale": "Resolution", "view": "View distance", "shadows": "Shadows", "trees": "Trees", "aa": "Smooth edges", "fx": "Effects (glow, haze)", "auto": "Auto quality", "chars": "Characters"}[k]), SettingsS.opt_text(k)], func():
 			SettingsS.cycle(k)
 			_show_settings())
 	_button(vb, "FPS counter: %s" % ("ON" if SettingsS.show_fps else "OFF"), func():
