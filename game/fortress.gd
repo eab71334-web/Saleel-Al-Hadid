@@ -790,9 +790,16 @@ func _process(dt: float) -> void:
 			battle.sfx.play("thud", gp, -2.0, 0.55)
 		gate_amt[t] = move_toward(gate_amt[t], 1.0 if open else 0.0, dt * 1.4)
 		var a: float = deg_to_rad(100.0) * gate_amt[t]
+		var brk: bool = kingdom.gate_broken[t]
+		if brk:
+			a = deg_to_rad(64.0)
 		if gate_l[t] != null:
 			gate_l[t].rotation.y = a
 			gate_r[t].rotation.y = -a
+			# broken gate: leaves hang crooked off the hinges
+			gate_l[t].rotation.z = lerpf(gate_l[t].rotation.z, 0.32 if brk else 0.0, 0.1)
+			gate_r[t].rotation.z = lerpf(gate_r[t].rotation.z, -0.22 if brk else 0.0, 0.1)
+			gate_l[t].rotation.x = lerpf(gate_l[t].rotation.x, 0.18 if brk else 0.0, 0.1)
 	# townsfolk wander inside the walls
 	for t in kingdom.nk:
 		if kingdom.fallen[t]:

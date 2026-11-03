@@ -3,6 +3,7 @@ extends Node3D
 
 const UiFx := preload("res://game/uifx.gd")
 const UnitS := preload("res://game/unit.gd")
+const SiegeS := preload("res://game/siege.gd")
 const ArrowS := preload("res://game/arrow.gd")
 const SfxS := preload("res://game/sfx.gd")
 const KingdomS := preload("res://game/kingdom.gd")
@@ -432,7 +433,15 @@ func siege_shot(u, to: Vector3) -> void:
 	var from: Vector3 = u.position + Vector3(0, 2.0, 0)
 	var dist := from.distance_to(to)
 	var style := 2 if u.kind == "catapult" else 1
-	_spawn_arrow(from, to, clampf(dist / 24.0, 0.5, 2.2), u.team, 0.0, false, style)
+	# the projectile leaves when the machine actually releases it
+	var delay: float = SiegeS.FIRE_T * SiegeS.RELEASE_K if u.kind == "catapult" else 0.07
+	if u.kind == "catapult":
+		from = u.position + u.transform.basis * Vector3(0, 7.0, 4.0)
+	else:
+		from = u.position + u.transform.basis * Vector3(0, 1.9, 1.9)
+	var tm: int = u.team
+	await get_tree().create_timer(delay).timeout
+	_spawn_arrow(from, to, clampf(dist / 24.0, 0.5, 2.2), tm, 0.0, false, style)
 	sfx.play("thud", from, -2.0)
 	if net.online:
 		arrow_fx.rpc(from, to, clampf(dist / 24.0, 0.5, 2.2), style)
@@ -1456,7 +1465,9 @@ func castle_hit(u, dmg: float) -> void:
 	var ft: int = kingdom.target_castle(u)
 	if ft < 0:
 		return
-	kingdom.damage_castle(ft, dmg * kingdom.SIEGE_MULT, u.team)
+	var lg: Vector3 = wl(ft, u.position)
+	var at_gate: bool = absf(lg.x) < kingdom.GATE_HALF + 3.5 and lg.z > -76.0
+	kingdom.damage_castle(ft, dmg * kingdom.SIEGE_MULT, u.team, at_gate)
 	var p: Vector3 = lw(ft, Vector3(0, 4.0, -71.0))
 	p.x = u.position.x
 	p.z = u.position.z

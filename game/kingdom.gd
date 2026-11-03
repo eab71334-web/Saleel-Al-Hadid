@@ -5,6 +5,7 @@ extends Node
 # dictionary 4 times a second plus a few reliable events.
 
 const GATE_HALF := 4.8
+const GATE_HP := 900.0
 const POSTERN_X := -24.0
 const TownS := preload("res://game/town.gd")
 const LocS := preload("res://game/loc.gd")
@@ -103,6 +104,8 @@ var extras := [{}, {}]
 var fires := [[], []]
 var vis_ready := false
 var gate_open := [false, false]
+var gate_hp := [GATE_HP, GATE_HP]
+var gate_broken := [false, false]
 var post_open := [false, false]
 var town: Node = null
 var view_team := -1
@@ -421,7 +424,7 @@ func via(t: int, from: Vector3, to: Vector3) -> Vector3:
 func _update_gates() -> void:
 	for t in nk:
 		var open := false
-		if fallen[t]:
+		if fallen[t] or gate_broken[t]:
 			open = true
 		else:
 			var gp: Vector3 = lw(t, Vector3(0, 0, -73.0))
@@ -609,14 +612,14 @@ func setup() -> void:
 	gold = []; food = []; level = []; castle_hp = []; fallen = []; wood = []; stone = []; iron = []; grain = []; flour = []; forge_w = []; forge_a = []; ship_n = []; trn_n = []; fsh_n = []; yard = []
 	tree_pos = []; tree_food = []; pop_used = []; vill_n = []; soldier_n = []; queue = []
 	letter_cd = []; decree_cd = []
-	tree_nodes = []; extras = []; fires = []; gate_open = []; post_open = []; ai_next = []; ai_info = []; march_cd = []
+	tree_nodes = []; extras = []; fires = []; gate_open = []; gate_hp = []; gate_broken = []; post_open = []; ai_next = []; ai_info = []; march_cd = []
 	for t in nk:
 		gold.append(START_GOLD); food.append(START_FOOD); level.append(1); wood.append(WOOD_START); stone.append(STONE_START); iron.append(IRON_START); grain.append(0.0); flour.append(0.0); forge_w.append(0); forge_a.append(0); ship_n.append(0); trn_n.append(0); fsh_n.append(0); yard.append(false)
 		castle_hp.append(CASTLE_HP[0]); fallen.append(false)
 		tree_pos.append([]); tree_food.append([]); pop_used.append(0); vill_n.append(0); soldier_n.append(0)
 		queue.append([]); letter_cd.append(0.0); decree_cd.append({"tax": 0.0, "feast": 0.0})
 		tree_nodes.append([])
-		extras.append({}); fires.append([]); gate_open.append(false); post_open.append(false); ai_next.append(0.0)
+		extras.append({}); fires.append([]); gate_open.append(false); gate_hp.append(GATE_HP); gate_broken.append(false); post_open.append(false); ai_next.append(0.0)
 		ai_info.append({}); march_cd.append(0.0)
 	_make_trees()
 	town = TownS.new()
@@ -838,7 +841,7 @@ func _state() -> Dictionary:
 		fnn.append(fsh_n[t])
 	return {"w": battle.war, "wp": war_pairs.keys(), "g": gl, "f": fl, "l": lv, "s": sl, "h": hp, "tf": tf,
 		"pu": pu, "vn": vn, "sn": sn, "q": qq, "fl": fa, "wd": wd, "sh": shp, "yd": yd, "tn": tn, "fn": fnn,
-		"fw": forge_w.duplicate(), "fa": forge_a.duplicate(), "stn": stn, "irn": irn, "grn": grn, "flr": flr, "yr": year_t, "tw": town.pack()}
+		"gb": gate_broken.duplicate(), "fw": forge_w.duplicate(), "fa": forge_a.duplicate(), "stn": stn, "irn": irn, "grn": grn, "flr": flr, "yr": year_t, "tw": town.pack()}
 
 
 func _apply_state(s: Dictionary) -> void:
@@ -858,6 +861,8 @@ func _apply_state(s: Dictionary) -> void:
 		soldier_n[t] = int(s.sn[t])
 		queue[t] = _fake_q(int(s.q[t]))
 		fallen[t] = bool(s.fl[t])
+		if s.has("gb"):
+			gate_broken[t] = bool(s.gb[t])
 		wood[t] = float(s.wd[t])
 		ship_n[t] = int(s.sh[t])
 		stone[t] = float(s.stn[t])
@@ -1249,6 +1254,13 @@ func _ev(kind: String, d: Dictionary) -> void:
 			_duel_visual_start(Vector3(d.c))
 		"duel_end":
 			_duel_visual_end()
+		"gate_break":
+			gate_broken[int(d.team)] = true
+			var gpos: Vector3 = lw(int(d.team), Vector3(0, 3.0, -73.0))
+			for i in 10:
+				battle._burst(gpos + Vector3(randf_range(-4, 4), randf_range(0, 4), 0), Color(0.6, 0.45, 0.25), 8, 6.0, false)
+			battle.sfx.play("thud", gpos, 6.0, 0.5)
+			battle.banner("THE GATE IS BROKEN!" if int(d.team) != my_team else "YOUR GATE HAS BROKEN!", Color(1.0, 0.55, 0.2), 2.6)
 		"castle_fall":
 			_castle_fall_visual(int(d.team))
 			if int(d.team) == my_team and nk > 2:
@@ -1776,9 +1788,14 @@ func on_march(owner: int) -> void:
 
 
 # ---- castle, towers ----
-func damage_castle(t: int, amount: float, by := -1) -> void:
+func damage_castle(t: int, amount: float, by := -1, at_gate := false) -> void:
 	if not is_srv or fallen[t] or not battle.war:
 		return
+	if at_gate and not gate_broken[t]:
+		gate_hp[t] = maxf(0.0, gate_hp[t] - amount)
+		if gate_hp[t] <= 0.0:
+			gate_broken[t] = true
+			ev_all("gate_break", {"team": t})
 	castle_hp[t] = maxf(0.0, castle_hp[t] - amount)
 	if castle_hp[t] <= 0.0:
 		fallen[t] = true
